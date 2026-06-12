@@ -108,7 +108,7 @@ El sistema es funcional, y el trabajo a futuro apunta a robustez y rigor:
 * Rigor del modelo en producción (Calibración de probabilidades y monitoreo de cambios temporales)
 * Mejor contexto y evaluación objetiva
 * Golden test programado y periodico
-* peración real con control humano
+* Operación real con control humano
 ---
 
 ## Stack técnico
