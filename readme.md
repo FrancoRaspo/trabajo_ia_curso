@@ -105,10 +105,10 @@ Sí. El sistema funciona de punta a punta y genera informes crediticios reales.
 
 El sistema es funcional, y el trabajo a futuro apunta a robustez y rigor:
 
-- **Rigor del modelo en producción (Calibración de probabilidades y monitoreo de cambios temporales)
-- **Mejor contexto y evaluación objetiva 
-- **Golden test programado y periodico
-- **Operación real con control humano
+* Rigor del modelo en producción (Calibración de probabilidades y monitoreo de cambios temporales)
+* Mejor contexto y evaluación objetiva
+* Golden test programado y periodico
+* peración real con control humano
 ---
 
 ## Stack técnico
