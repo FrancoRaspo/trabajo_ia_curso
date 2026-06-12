@@ -1,0 +1,4 @@
+* Solo se puedan dar créditos a asociados registrados
+* Solo se aceptan solicitudes con documentos adjuntos
+* No se toman créditos con score menores a 700
+* Si la persona hace mas de 3 meses del su último credito, debe presentar en los adjuntos la constancia inscripción de ARCA vigente

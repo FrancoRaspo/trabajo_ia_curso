@@ -1,0 +1,22 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: embeddings-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: embeddings
+      POSTGRES_PASSWORD: embeddings.
+      POSTGRES_DB: embeddings
+    ports:
+      - "5432:5432"
+    volumes:
+      - embeddings_data:/var/lib/postgresql/data
+      - ./init:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U embeddings -d embeddings"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  embeddings_data:

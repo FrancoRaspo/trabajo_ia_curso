@@ -1,0 +1,41 @@
+# ── LangChain: núcleo + integraciones (1.x) ──────────────────────────
+langchain>=1.0,<2.0
+langchain-core>=1.0,<2.0
+langchain-community>=0.4,<0.5            # en sunset; sigue proveyendo PyPDFLoader
+langchain-text-splitters>=1.0,<2.0
+langchain-postgres>=0.0.15,<0.1.0        # PGVector (deprecada pero presente)
+langchain-huggingface>=1.0,<2.0
+langchain-ollama>=1.0,<2.0               # ChatOllama (LLM local)
+langchain-anthropic>=1.0,<2.0
+langchain-openai>=1.0,<2.0
+langchain-google-genai>=4.0,<5.0
+
+# ── App web ──────────────────────────────────────────────────────────
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+python-multipart>=0.0.9                  # requerido por FastAPI para subir archivos / Form
+
+# ── Bases de datos ───────────────────────────────────────────────────
+psycopg[binary]>=3.1.0                    # driver PostgreSQL v3 (requerido por langchain-postgres)
+pyodbc>=5.0.0                             # driver SQL Server (requiere ODBC Driver 17/18 instalado)
+sqlalchemy>=2.0.0
+
+# ── Embeddings ───────────────────────────────────────────────────────
+sentence-transformers>=3.0.0             # trae torch/transformers
+
+# ── Modelo ML ────────────────────────────────────────────────────────
+xgboost>=2.0.0
+scikit-learn>=1.4.0
+pandas>=2.0.0
+numpy>=1.26.0
+
+# ── PDF ──────────────────────────────────────────────────────────────
+pypdf>=4.0.0
+
+# ── Utilidades ───────────────────────────────────────────────────────
+python-dotenv>=1.0.0
+joblib>=1.3.0
+
+# ── Tests (desarrollo) ───────────────────────────────────────────────
+pytest>=8.0.0
+
