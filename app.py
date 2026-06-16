@@ -463,6 +463,8 @@ CONTENIDO = """
       if (ev.tipo === 'etapa') {
         setProgreso(ETIQUETAS[ev.clave] || 'Procesando…');
         if (ev.clave === 'llm') { tarjetaInforme.style.display = 'block'; }
+      } else if (ev.tipo === 'seccion') {
+        setProgreso('Redactando: ' + (ev.titulo || 'informe') + '…');
       } else if (ev.tipo === 'meta') {
         // Membrete del documento: institución + N° de informe + fecha (datos fijos)
         const fecha = new Date().toLocaleDateString('es-AR', { day: '2-digit', month: '2-digit', year: 'numeric' });
@@ -495,7 +497,10 @@ CONTENIDO = """
       } else if (ev.tipo === 'fin') {
         ocultarProgreso();
         if (rafRender) { cancelAnimationFrame(rafRender); rafRender = null; }
-        elTexto.innerHTML = mdToHtml(mdCrudo);   // render final, sin cursor
+        // Durante el stream las secciones llegan en orden de ejecución; el evento
+        // 'fin' trae el documento en orden de lectura (Resumen arriba). Si viene,
+        // se usa para el render final; si no, se cae al texto acumulado.
+        elTexto.innerHTML = mdToHtml(ev.informe || mdCrudo);
         accionesFin.style.display = 'flex';
       } else if (ev.tipo === 'error') {
         volverConError(ev.mensaje || 'Ocurrió un error.');

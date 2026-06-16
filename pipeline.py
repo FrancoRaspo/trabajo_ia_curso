@@ -49,10 +49,7 @@ class ReportPipeline:
         from rag.pgvector_retriever import PGVectorRetriever
         self.rag        = PGVectorRetriever()
         print("[DBG] RAG retriever initialized", flush=True)
-        print("[DBG] creating prompt builder...", flush=True)
-        from llm.prompt_builder import PromptBuilder
-        self.builder    = PromptBuilder()
-        print("[DBG] prompt builder created", flush=True)
+
         print("[DBG] creating validator...", flush=True)
         self.validator  = ReportValidator()
         print("[DBG] validator created", flush=True)
@@ -60,19 +57,7 @@ class ReportPipeline:
         from llm.generator import get_llm
         self.llm        = get_llm(llm_provider)
         print("[DBG] LLM client created", flush=True)
-        from langchain_core.prompts import ChatPromptTemplate
-        from langchain_core.output_parsers import StrOutputParser
-        from llm.prompts import SYSTEM_PROMPT, HUMAN_PROMPT_TEMPLATE
-
-        self.chain = (
-            ChatPromptTemplate.from_messages([
-                ("system", SYSTEM_PROMPT),
-                ("human",  HUMAN_PROMPT_TEMPLATE),
-            ])
-            | self.llm
-            | StrOutputParser()
-        )
-        print("[DBG] LangChain chain ready", flush=True)
+        # El informe (batch y streaming) se arma POR SECCIONES en llm/report_sections.py.
 
         # Extractor de datos. Por defecto reusa la MISMA LLM del informe.
         # Si EXTRACTOR_MODEL es un NOMBRE DE MODELO real (ej. "qwen3:1.7b"),
@@ -207,9 +192,9 @@ class ReportPipeline:
             "rag":                 rag_context,
         }
 
-        print("[4/5] Generando informe con LLM...")
-        prompt_vars   = self.builder.build(contexto)
-        informe_texto = self.chain.invoke(prompt_vars)
+        print("[4/5] Generando informe por secciones...")
+        from llm.report_sections import armar_informe
+        informe_texto = armar_informe(contexto, self.llm)
 
         print("[5/5] Validando y guardando en PostgreSQL...")
         validacion = self.validator.validar(informe_texto, contexto)
@@ -290,22 +275,28 @@ class ReportPipeline:
                "encontrado": True,
                "modelo": self._nombre_llm(),
                "score": scoring.get("score"),
-               "nivel": scoring.get("nivel")}
+               "nivel": scoring.get("nivel_riesgo")}
 
         yield {"tipo": "etapa", "clave": "llm"}
-        prompt_vars = self.builder.build(contexto)
-        partes = []
-        for chunk in self.chain.stream(prompt_vars):   # streaming token a token
-            partes.append(chunk)
-            yield {"tipo": "token", "texto": chunk}
-        informe_texto = "".join(partes)
+        # Generación por secciones, en streaming. armar_informe_stream emite
+        # eventos {seccion|token} en vivo y, al final, {informe: <doc completo>}
+        # ya ordenado (Resumen arriba) para el render final.
+        from llm.report_sections import armar_informe_stream
+        informe_texto = ""
+        for ev in armar_informe_stream(contexto, self.llm):
+            if ev["tipo"] == "informe":
+                informe_texto = ev["texto"]
+            else:                       # "seccion" / "token" -> se reenvían a la UI
+                yield ev
 
         validacion = self.validator.validar(informe_texto, contexto)
         self._guardar_log(contexto, informe_texto, validacion, "")
         yield {"tipo": "validacion",
                "aprobado":     validacion.get("aprobado", True),
                "advertencias": validacion.get("advertencias", [])}
-        yield {"tipo": "fin"}
+        # 'informe' lleva el documento en orden de lectura para el render final
+        # (durante el stream las secciones llegan en orden de ejecución).
+        yield {"tipo": "fin", "informe": informe_texto}
 
     def _stream_informe_sin_datos(self, cliente_id: str, tipo_decision: str,
                                   razon_social: str):
@@ -397,9 +388,13 @@ class ReportPipeline:
                 'cliente_id': ctx['cliente_id'],
                 'tipo_decision': ctx['tipo_decision'],
                 'score': ctx['scoring'].get('score', 0),
-                'nivel': ctx['scoring'].get('nivel', 'DESCONOCIDO'),
+                # El scoring del modelo usa la clave 'nivel_riesgo'; el camino
+                # "sin datos" usa 'nivel'. Se contemplan ambas.
+                'nivel': (ctx['scoring'].get('nivel_riesgo')
+                          or ctx['scoring'].get('nivel') or 'DESCONOCIDO'),
                 'informe': informe,
-                'validacion_ok': validacion.get('ok', True),
+                # El validador devuelve 'aprobado' (no 'ok').
+                'validacion_ok': validacion.get('aprobado', True),
                 'advertencias': json.dumps(validacion.get('advertencias', [])),
                 'trazabilidad': json.dumps(ctx.get('trazabilidad', {})),
             })

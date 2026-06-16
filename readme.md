@@ -151,7 +151,7 @@ trabajo_ia/
 ├── evaluation/
 │   ├── llm_judge.py           # Juez LLM (auditoría de informes)
 │   └── run_judge.py           # Generar un informe y auditarlo
-│   └── test_implementacion.py # Tests deterministas de la implementación
+│   └── test_impletation.py    # Tests deterministas de la implementación
 ├── scripts/
 │   └── entrenar_modelo_real.py # Entrenar el modelo de scoring con datos reales
 └── politicas/                 # Políticas de la entidad (se reindexan al iniciar)
@@ -174,7 +174,7 @@ pip install -r requirements.txt
 ollama pull qwen3:14b
 
 # 4. Inicializar la base (pgvector + tablas)
-python init_db.py
+python -m sql.init_db
 
 # 5. Entrenar el modelo de scoring (una vez)
 python scripts/entrenar_modelo_real.py

@@ -9,8 +9,8 @@ Crea / asegura SOLO lo que el código realmente usa:
   - índice GIN sobre 'cmetadata' para filtrar rápido por tipo / cliente_id
   - tabla 'informes_generados' (log de trazabilidad que escribe _guardar_log)
 
-Uso:
-    python init_db.py
+Uso (desde la raíz del proyecto, como módulo para resolver los imports):
+    python -m sql.init_db
 
 Nota: la primera vez descarga el modelo de embeddings (bge-m3 ~2 GB o el que
 tengas en EMBED_MODEL), así que puede tardar.
