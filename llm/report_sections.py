@@ -39,6 +39,22 @@ BASE = (
     "'no disponible'.\n"
     "- No agregues calificativos sin respaldo en los datos (nada de 'estable', "
     "'sólido', 'excelente').\n"
+    "- NO declares 'sin antecedentes negativos', 'ausencia de historial negativo', "
+    "'no registra atrasos' ni equivalentes si en el contexto hay cuotas no "
+    "puntuales, días de atraso (históricos o actuales) o gestiones de mora. Un "
+    "score favorable NO implica un historial sin atrasos.\n"
+    "- NO afirmes que el asociado 'no posee' o 'carece de' historial crediticio "
+    "salvo que el contexto lo indique explícitamente (scoring.sin_historial = true "
+    "o la lista de préstamos vacía). Si hay préstamos registrados, SÍ posee "
+    "historial.\n"
+    "- NO afirmes que un préstamo está 'al día', 'vigente' o 'activo' si NINGÚN "
+    "préstamo está en estado VIGENTE (p. ej. todos figuran CANCELADO o "
+    "IRRECUPERABLE). No inventes un préstamo en curso que no existe.\n"
+    "- Los importes en pesos YA VIENEN formateados en el contexto como texto "
+    "(ej. \"$1.234.567,89\"): copialos TAL CUAL, sin reformatearlos, redondearlos "
+    "ni recalcularlos. Para cualquier otro número que debas mostrar, usá el formato "
+    "argentino: punto como separador de miles y coma para los decimales; NUNCA el "
+    "formato anglosajón ($1,234,567.89).\n"
     "- NUNCA menciones en el texto nombres internos de campos, claves ni "
     "estructuras de datos (p. ej. scoring, drivers, políticas, documentos como si "
     "fueran campos). El lector es un directivo y no ve el JSON: redactá en prosa "
@@ -71,16 +87,50 @@ SECCIONES = [
     {
         "id": "historial",
         "titulo": "Historial Crediticio",
-        "claves": ["historial_prestamos", "pagos_resumen"],
+        "claves": ["historial_prestamos", "pagos_resumen", "gestiones_mora"],
         "instruccion": (
             "Resumí el historial de préstamos: cada préstamo en UNA línea con "
             "monto original, saldo actual, cuotas pendientes, días de atraso y "
-            "estado. No vuelques todos los campos ni el JSON crudo. Resumí también "
-            "el comportamiento de pagos del asociado. Si no hay "
+            "estado. "
+            "IMPORTANTE: si algún préstamo VIGENTE tiene 'dias_atraso_actual' "
+            "mayor a 0, destacalo EXPLÍCITAMENTE como mora vigente (un atraso "
+            "actual superior a 90 días es GRAVE), AUNQUE el resumen de pagos de los "
+            "últimos 24 meses no muestre atrasos graves. No confundas el resumen de "
+            "comportamiento de los últimos 24 meses (cuotas ya vencidas) con el "
+            "atraso actual de los préstamos vigentes: son señales distintas e "
+            "informás AMBAS; nunca afirmes 'sin atrasos' si hay atraso actual. "
+            "Resumí también el comportamiento de pagos del asociado, indicando "
+            "EXPLÍCITAMENTE las cuotas puntuales sobre el total y el atraso máximo "
+            "histórico: si hubo cuotas no puntuales o atrasos máximos mayores a 0, "
+            "son antecedentes negativos y no podés describir el historial como "
+            "limpio. "
+            "Si el contexto incluye gestiones de mora ('gestiones_mora'), "
+            "informalas (fecha, tipo de gestión, resultado y monto comprometido); "
+            "si la lista está vacía, indicá que no se registran gestiones de mora. "
+            "No vuelques todos los campos ni el JSON crudo. Si no hay "
             "préstamos ni cuotas (0 o listas vacías), indicá EXPLÍCITAMENTE que el "
             "asociado no posee historial crediticio previo en la entidad y que su "
             "comportamiento de pago no puede evaluarse; no digas 'no registra "
             "atrasos' ni infieras buen comportamiento."
+        ),
+    },
+    {
+        "id": "bcra",
+        "titulo": "Situación en el Sistema Financiero (BCRA)",
+        "claves": ["bcra"],
+        "omitir_si_vacio": True,   # si no se consultó el BCRA, no se incluye la sección
+        "instruccion": (
+            "Presentá la situación del asociado en el sistema financiero según la "
+            "Central de Deudores del BCRA, usando SOLO el contexto provisto. Indicá: "
+            "cantidad de entidades en las que registra deuda, deuda total, y la PEOR "
+            "situación crediticia (escala BCRA del 1=normal al 5=irrecuperable) con su "
+            "descripción; mencioná si hay deuda en proceso judicial, refinanciaciones o "
+            "registros en revisión. Informá los cheques rechazados: cantidad total, "
+            "cuántos siguen impagos y los montos. Si el contexto indica que no hay datos "
+            "(tiene_datos en falso), escribí en prosa que no se obtuvieron registros de "
+            "la Central de Deudores del BCRA al momento del informe, sin inferir nada. "
+            "Una situación 1 o la ausencia de deuda es información POSITIVA, decilo como "
+            "tal. No listes números de cheque individuales."
         ),
     },
     {
@@ -96,16 +146,26 @@ SECCIONES = [
     {
         "id": "cumplimiento",
         "titulo": "Cumplimiento de Políticas",
-        "claves": ["scoring", "datos_cliente", "rag"],
+        "claves": ["scoring", "datos_cliente", "rag", "historial_prestamos"],
         "instruccion": (
             "Listá las políticas internas relevantes provistas y, para cada una, "
             "indicá su cumplimiento basándote SOLO en hechos documentados: el "
-            "score del asociado y los documentos que aportó. Si no se provee "
-            "ninguna política, indicá en prosa que no se registran políticas "
-            "internas relevantes para evaluar. NO infieras si una política que "
-            "presupone créditos previos (ej. 'más de 3 meses del último crédito') "
-            "'se aplica' o 'no se aplica' a un cliente sin historial; limitate a "
-            "constatar la documentación efectivamente presentada."
+            "score del asociado, los documentos que aportó y el historial de "
+            "préstamos. Si no se provee ninguna política, indicá en prosa que no se "
+            "registran políticas internas relevantes para evaluar. "
+            "Para políticas que dependan del tiempo desde el último crédito (ej. "
+            "'más de 3 meses del último crédito'), usá la antigüedad del último "
+            "préstamo —la fecha de otorgamiento del historial o "
+            "'ultimo_prestamo_hace_meses' del scoring— y la vigencia de la "
+            "documentación (comparando fechas) para determinar el cumplimiento "
+            "cuando los datos lo permitan; NO seas ambiguo si el dato está "
+            "disponible. Solo abstenete de evaluar si el asociado NO posee "
+            "historial (sin préstamos previos) o si realmente falta el dato. "
+            "Cuando una política exija un documento con fecha de vigencia (ej. "
+            "constancia de inscripción ARCA), BUSCÁ esa fecha en el contenido de "
+            "los documentos del contexto y compará su vigencia contra la fecha del "
+            "informe; NO declares el dato 'no disponible' si el documento lo "
+            "contiene."
         ),
     },
 ]
@@ -116,7 +176,16 @@ INSTR_RECOMENDACION = (
     "Redactá la recomendación crediticia a partir del score (nivel, semáforo y si "
     "el asociado posee o no historial crediticio) y del resumen de cumplimiento de "
     "políticas ya redactado. La recomendación debe ser coherente con el nivel de "
-    "riesgo y el semáforo. Si el asociado no posee historial crediticio, "
+    "riesgo y el semáforo. "
+    "Si en el contexto hay préstamos vigentes con atraso actual "
+    "('dias_atraso_actual' > 0) o gestiones de mora registradas, la recomendación "
+    "DEBE ponderarlas de forma explícita y condicionar o alertar, AUNQUE el score "
+    "sea favorable: un score de bajo riesgo NO anula una mora vigente. Nunca "
+    "afirmes 'ausencia de atrasos' si existe atraso actual en un préstamo vigente. "
+    "Si una política interna fija un umbral (ej. score mínimo) y el asociado NO lo "
+    "cumple, la recomendación debe ser de NO aprobación (no meramente "
+    "'condicionar la aprobación'), explicando el incumplimiento. "
+    "Si el asociado no posee historial crediticio, "
     "condicioná SIEMPRE la aprobación a verificación manual, aclarando que el "
     "score refleja ausencia de señal negativa y NO comportamiento de pago "
     "demostrado. No cierres con disclaimers (eso va en otra sección)."
@@ -125,9 +194,11 @@ INSTR_RECOMENDACION = (
 INSTR_RESUMEN = (
     "Redactá un Resumen Ejecutivo de UN párrafo a partir del score y de la "
     "recomendación ya redactada. Mencioná el perfil de riesgo, el score y la "
-    "decisión recomendada. Si el asociado no posee historial crediticio previo, "
-    "dejalo claro y no infieras buen comportamiento. No declares cuál factor "
-    "'influyó más' (eso ya está en Clasificación de Riesgo)."
+    "decisión recomendada. Si la recomendación señala mora vigente o atraso actual "
+    "en algún préstamo, el resumen DEBE reflejarlo y no describir el perfil como "
+    "favorable sin matizar esa señal. Si el asociado no posee historial crediticio "
+    "previo, dejalo claro y no infieras buen comportamiento. No declares cuál "
+    "factor 'influyó más' (eso ya está en Clasificación de Riesgo)."
 )
 
 
@@ -145,6 +216,12 @@ def _cadena(llm, instruccion):
 def _slice(contexto: dict, claves: list) -> dict:
     """Devuelve solo las claves pedidas del contexto (contexto acotado por sección)."""
     return {k: contexto.get(k) for k in claves}
+
+
+def _slice_vacio(sl: dict) -> bool:
+    """True si todas las claves del slice están vacías (None/''/[]/{}).
+    Se usa para omitir secciones opcionales (ej. BCRA si no se consultó)."""
+    return all(v in (None, "", [], {}) for v in sl.values())
 
 
 def _encabezado(contexto: dict) -> str:
@@ -197,16 +274,21 @@ def armar_informe_stream(contexto: dict, llm):
 
     generadas = {}
     for s in SECCIONES:
-        texto = yield from _stream_seccion(
-            llm, s["titulo"], s["instruccion"], _slice(contexto, s["claves"])
-        )
+        sl = _slice(contexto, s["claves"])
+        if s.get("omitir_si_vacio") and _slice_vacio(sl):
+            continue                      # sección opcional sin datos -> no se genera
+        texto = yield from _stream_seccion(llm, s["titulo"], s["instruccion"], sl)
         generadas[s["id"]] = (s["titulo"], texto)
 
-    # Recomendación: depende del cumplimiento ya redactado.
+    # Recomendación: depende del cumplimiento ya redactado y necesita ver las
+    # señales operativas (atraso actual de préstamos vigentes y gestiones de mora)
+    # para poder ponderarlas aunque el score sea favorable.
     ctx_reco = {
-        "scoring":       contexto.get("scoring"),
-        "tipo_decision": contexto.get("tipo_decision"),
-        "cumplimiento":  generadas.get("cumplimiento", ("", ""))[1],
+        "scoring":             contexto.get("scoring"),
+        "tipo_decision":       contexto.get("tipo_decision"),
+        "cumplimiento":        generadas.get("cumplimiento", ("", ""))[1],
+        "historial_prestamos": contexto.get("historial_prestamos"),
+        "gestiones_mora":      contexto.get("gestiones_mora"),
     }
     recomendacion = yield from _stream_seccion(
         llm, "Recomendación", INSTR_RECOMENDACION, ctx_reco
@@ -230,6 +312,8 @@ def armar_informe_stream(contexto: dict, llm):
     # Ensamble final en ORDEN DE LECTURA (Resumen arriba), para el render final.
     partes = [encabezado, f"## Resumen Ejecutivo\n{resumen}"]
     for s in SECCIONES:
+        if s["id"] not in generadas:      # se omitió (sección opcional sin datos)
+            continue
         titulo, texto = generadas[s["id"]]
         partes.append(f"## {titulo}\n{texto}")
     partes.append(f"## Recomendación\n{recomendacion}")

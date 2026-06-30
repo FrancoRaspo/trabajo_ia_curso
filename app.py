@@ -26,8 +26,11 @@ import traceback
 from contextlib import asynccontextmanager
 from datetime import datetime
 
+from typing import Any
+
 from fastapi import FastAPI, Form, File, UploadFile
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, StreamingResponse, Response, JSONResponse
+from pydantic import BaseModel
 
 # Cargar variables de entorno (.env). pipeline.py también lo hace al importarse,
 # pero lo dejamos acá para que app.py sea autosuficiente.
@@ -284,7 +287,7 @@ CONTENIDO = """
 
     <div class="barra-acciones" id="accionesFin" style="display:none;">
       <button type="button" class="secundario" onclick="reiniciar()">Nuevo informe</button>
-      <button type="button" onclick="window.print()">Imprimir / PDF</button>
+      <button type="button" id="btnPdf" onclick="descargarPDF()">Descargar PDF</button>
     </div>
   </div>
 
@@ -303,6 +306,7 @@ CONTENIDO = """
     const accionesFin = document.getElementById('accionesFin');
     let mdCrudo = '';
     let rafRender = null;   // id de requestAnimationFrame para agrupar renders
+    let datosInforme = {};  // datos del membrete (del evento meta) para el PDF
 
     const ETIQUETAS = {
       extraccion: 'Interpretando la consulta…',
@@ -401,6 +405,39 @@ CONTENIDO = """
       tarjetaForm.style.display = 'block';
       ocultarAviso();
     }
+
+    // Descarga el PDF desde el servidor (mismo renderizador que el endpoint
+    // app-to-app), enviando el informe YA generado -> el PDF es idéntico a lo
+    // que se ve en pantalla.
+    async function descargarPDF() {
+      if (!datosInforme.informe) { return; }
+      const btn = document.getElementById('btnPdf');
+      const txt = btn.textContent;
+      btn.disabled = true; btn.textContent = 'Generando PDF…';
+      try {
+        const resp = await fetch('/api/informe/pdf-render', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(datosInforme),
+        });
+        if (!resp.ok) {
+          let msg = 'No se pudo generar el PDF.';
+          try { msg = (await resp.json()).error || msg; } catch (e) {}
+          mostrarAviso(msg); return;
+        }
+        const blob = await resp.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'informe-' + (datosInforme.cuit || 'sd') + '-' + (datosInforme.numero || '') + '.pdf';
+        document.body.appendChild(a); a.click(); a.remove();
+        URL.revokeObjectURL(url);
+      } catch (e) {
+        mostrarAviso('No se pudo conectar con el servidor para generar el PDF.');
+      } finally {
+        btn.disabled = false; btn.textContent = txt;
+      }
+    }
     function volverConError(msg) {
       proceso.style.display = 'none';
       tarjetaForm.style.display = 'block';
@@ -466,6 +503,15 @@ CONTENIDO = """
       } else if (ev.tipo === 'seccion') {
         setProgreso('Redactando: ' + (ev.titulo || 'informe') + '…');
       } else if (ev.tipo === 'meta') {
+        // Guardar los datos del membrete para poder generar el PDF idéntico al
+        // informe mostrado (se envían al endpoint /api/informe/pdf-render).
+        datosInforme = {
+          numero: ev.numero || '', cuit: ev.cuit || '', nombre: ev.razon || '',
+          motivo: ev.motivo || '', modelo: ev.modelo || '',
+          score: (ev.score === undefined ? null : ev.score),
+          nivel: ev.nivel || '', bcra: ev.bcra || null,
+          encontrado: ev.encontrado !== false,
+        };
         // Membrete del documento: institución + N° de informe + fecha (datos fijos)
         const fecha = new Date().toLocaleDateString('es-AR', { day: '2-digit', month: '2-digit', year: 'numeric' });
         let cab = '';
@@ -487,6 +533,22 @@ CONTENIDO = """
         }
         if (ev.score !== undefined && ev.score !== null) h += '<br><strong>Score:</strong> ' + escapar(String(ev.score));
         if (ev.nivel) h += ' &nbsp;·&nbsp; <strong>Nivel:</strong> ' + escapar(String(ev.nivel));
+        // BCRA (Central de Deudores): se muestra si el pipeline lo consultó.
+        if (ev.bcra) {
+          if (ev.bcra.tiene_datos) {
+            const irregular = Number(ev.bcra.peor_situacion) >= 3;
+            let sit = 'Situación ' + escapar(String(ev.bcra.peor_situacion));
+            if (ev.bcra.peor_situacion_desc) sit += ' (' + escapar(String(ev.bcra.peor_situacion_desc)) + ')';
+            let b = '<strong>BCRA:</strong> ' +
+                    (irregular ? '<span style="color:var(--error);">' + sit + '</span>' : sit);
+            if (ev.bcra.cant_entidades) b += ' &nbsp;·&nbsp; ' + escapar(String(ev.bcra.cant_entidades)) + ' entidad(es)';
+            if (ev.bcra.cheques_impagos) b += ' &nbsp;·&nbsp; <span style="color:var(--error);">' +
+                    escapar(String(ev.bcra.cheques_impagos)) + ' cheque(s) impago(s)</span>';
+            h += '<br>' + b;
+          } else {
+            h += '<br><strong>BCRA:</strong> sin registros en el sistema financiero';
+          }
+        }
         h += '<br><strong>Motivo:</strong> ' + escapar(ev.motivo || '');
         elMeta.innerHTML = h;
       } else if (ev.tipo === 'token') {
@@ -500,7 +562,8 @@ CONTENIDO = """
         // Durante el stream las secciones llegan en orden de ejecución; el evento
         // 'fin' trae el documento en orden de lectura (Resumen arriba). Si viene,
         // se usa para el render final; si no, se cae al texto acumulado.
-        elTexto.innerHTML = mdToHtml(ev.informe || mdCrudo);
+        datosInforme.informe = ev.informe || mdCrudo;   // markdown final para el PDF
+        elTexto.innerHTML = mdToHtml(datosInforme.informe);
         accionesFin.style.display = 'flex';
       } else if (ev.tipo === 'error') {
         volverConError(ev.mensaje || 'Ocurrió un error.');
@@ -603,6 +666,130 @@ def informe_stream(consulta: str = Form(...),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+# ===========================================================================
+#  API: generar el informe y devolver el PDF directamente (app-to-app)
+# ===========================================================================
+# A diferencia de la web (que extrae los datos de una consulta en lenguaje
+# natural y transmite el informe por SSE), este endpoint recibe los campos ya
+# estructurados —CUIT, nombre y objetivo del crédito—, genera el informe y
+# devuelve el PDF listo para descargar. La aplicación web sigue igual.
+
+class InformePDFRequest(BaseModel):
+    cuit: str
+    nombre: str = ""
+    objetivo: str
+
+
+def _generar_informe(pipeline, cuit: str, motivo: str, razon: str):
+    """Corre el pipeline de generación y devuelve (informe_markdown, meta).
+
+    Reutiliza generar_stream() —igual que la web— para cubrir también el caso
+    del solicitante sin datos internos. Acumula los tokens y, al cerrar, usa el
+    documento en orden de lectura si vino ('fin'.informe) o el acumulado."""
+    md_acc, meta, informe = [], {}, ""
+    for ev in pipeline.generar_stream(cuit, motivo, razon):
+        tipo = ev.get("tipo")
+        if tipo == "token":
+            md_acc.append(ev.get("texto", ""))
+        elif tipo == "meta":
+            meta = ev
+        elif tipo == "fin":
+            informe = ev.get("informe") or "".join(md_acc)
+    return (informe or "".join(md_acc)), meta
+
+
+@app.post("/api/informe/pdf")
+def api_informe_pdf(req: InformePDFRequest):
+    """Genera el informe crediticio y lo devuelve como PDF descargable.
+
+    Body JSON: {"cuit": "...", "nombre": "...", "objetivo": "..."}
+    Respuesta: application/pdf (attachment) o JSON con {"error": ...} si falla.
+    """
+    cuit = normalizar_cuit(req.cuit)
+    if not cuit_valido(cuit):
+        return JSONResponse(status_code=422, content={
+            "error": "CUIT inválido: deben ser 11 dígitos con dígito verificador correcto."})
+    objetivo = (req.objetivo or "").strip()
+    if not objetivo:
+        return JSONResponse(status_code=422, content={
+            "error": "Falta el objetivo del crédito."})
+    razon = (req.nombre or "").strip()
+
+    numero = nuevo_numero_informe()
+    try:
+        pipeline = get_pipeline(PROVEEDOR_LLM)
+        informe_md, meta = _generar_informe(pipeline, cuit, objetivo, razon)
+    except Exception as exc:
+        traceback.print_exc()
+        return JSONResponse(status_code=500, content={
+            "error": str(exc).strip() or "No se pudo generar el informe."})
+
+    from pdf_export import informe_a_pdf
+    try:
+        pdf = informe_a_pdf(
+            informe_md,
+            empresa=EMPRESA, numero=numero,
+            fecha=datetime.now().strftime("%d/%m/%Y"),
+            modelo=meta.get("modelo", ""),
+            cuit=cuit, razon=razon, motivo=objetivo,
+            score=meta.get("score"), nivel=meta.get("nivel"),
+            bcra=meta.get("bcra"), encontrado=meta.get("encontrado", True),
+        )
+    except Exception as exc:
+        traceback.print_exc()
+        return JSONResponse(status_code=500, content={
+            "error": str(exc).strip() or "No se pudo generar el PDF."})
+
+    filename = f"informe-{cuit}-{numero}.pdf"
+    return Response(content=pdf, media_type="application/pdf", headers={
+        "Content-Disposition": f'attachment; filename="{filename}"'})
+
+
+class InformePDFRenderRequest(BaseModel):
+    """Render del informe YA generado (lo usa el botón 'Descargar PDF' de la web).
+    No corre el pipeline: rinde el mismo Markdown que se ve en pantalla, para que
+    el PDF sea idéntico al informe mostrado y al del endpoint app-to-app."""
+    informe: str
+    numero: str = ""
+    cuit: str = ""
+    nombre: str = ""
+    motivo: str = ""
+    modelo: str = ""
+    score: Any = None
+    nivel: str = ""
+    bcra: Any = None
+    encontrado: bool = True
+
+
+@app.post("/api/informe/pdf-render")
+def api_informe_pdf_render(req: InformePDFRenderRequest):
+    """Renderiza a PDF un informe ya producido (Markdown + datos del membrete).
+    Comparte el renderizador con /api/informe/pdf -> ambos PDF salen iguales."""
+    if not (req.informe or "").strip():
+        return JSONResponse(status_code=422, content={"error": "Falta el informe a renderizar."})
+
+    cuit = normalizar_cuit(req.cuit)
+    from pdf_export import informe_a_pdf
+    try:
+        pdf = informe_a_pdf(
+            req.informe,
+            empresa=EMPRESA, numero=req.numero,
+            fecha=datetime.now().strftime("%d/%m/%Y"),
+            modelo=req.modelo,
+            cuit=cuit, razon=req.nombre, motivo=req.motivo,
+            score=req.score, nivel=req.nivel,
+            bcra=req.bcra, encontrado=req.encontrado,
+        )
+    except Exception as exc:
+        traceback.print_exc()
+        return JSONResponse(status_code=500, content={
+            "error": str(exc).strip() or "No se pudo generar el PDF."})
+
+    filename = f"informe-{cuit or 's/d'}-{req.numero or 's-n'}.pdf"
+    return Response(content=pdf, media_type="application/pdf", headers={
+        "Content-Disposition": f'attachment; filename="{filename}"'})
 
 
 if __name__ == "__main__":

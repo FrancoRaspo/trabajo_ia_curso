@@ -2,10 +2,13 @@ from dotenv import load_dotenv
 load_dotenv()
 print("[DBG] dotenv loaded", flush=True)
 
+import copy
 import os
 from datetime import datetime
 from sqlalchemy import text
 print("[DBG] core libs imported", flush=True)
+
+from external.bcra_normalizer import formato_pesos
 
 from db.sqlserver_connection import get_sqlserver_session
 from db.postgres_connection import get_postgres_session
@@ -32,6 +35,57 @@ def _es_no_encontrado(exc: Exception) -> bool:
         return True
     msg = str(exc).lower()
     return ("no encontrado" in msg) or ("no existe" in msg) or ("not found" in msg)
+
+
+# Campos monetarios de cada sección del contexto. Se pre-formatean a pesos
+# argentinos (string) ANTES de pasarlos al LLM para que los transcriba tal cual
+# y no reinterprete el punto decimal (ej. 89.492781 -> "$89,49", nunca $89.492,78).
+_CAMPOS_MONTO = {
+    "datos_cliente":       ["ingreso_neto_declarado"],
+    "historial_prestamos": ["monto_original", "saldo_capital_actual"],
+    "saldos_cuentas":      ["saldo_promedio", "saldo_minimo", "saldo_maximo", "saldo_ultimo"],
+    "gestiones_mora":      ["monto_comprometido"],
+}
+
+
+def _fmt_campos(d: dict, claves) -> None:
+    """Reemplaza in-place los campos numéricos de `d` por su formato en pesos."""
+    for k in claves:
+        v = d.get(k)
+        if v is None:
+            continue
+        try:
+            d[k] = formato_pesos(float(v))
+        except (TypeError, ValueError):
+            pass            # no es numérico: se deja como está
+
+
+def _fmt_montos_contexto(contexto: dict) -> dict:
+    """Copia del contexto con los importes ya formateados en pesos argentinos.
+    No muta el original: ese sigue siendo la fuente de verdad (validador/juez)."""
+    ctx = copy.deepcopy(contexto)
+
+    datos = ctx.get("datos_cliente")
+    if isinstance(datos, dict):
+        _fmt_campos(datos, _CAMPOS_MONTO["datos_cliente"])
+
+    for clave in ("historial_prestamos", "saldos_cuentas", "gestiones_mora"):
+        for item in (ctx.get(clave) or []):
+            if isinstance(item, dict):
+                _fmt_campos(item, _CAMPOS_MONTO[clave])
+
+    bcra = ctx.get("bcra")
+    if isinstance(bcra, dict):
+        _fmt_campos(bcra, ["deuda_total_sistema", "monto_cheques_rechazados",
+                           "monto_cheques_impagos"])
+        for e in (bcra.get("entidades") or []):
+            if isinstance(e, dict):
+                _fmt_campos(e, ["monto"])
+        for c in (bcra.get("cheques_detalle") or []):
+            if isinstance(c, dict):
+                _fmt_campos(c, ["monto"])
+
+    return ctx
 
 
 class ReportPipeline:
@@ -138,6 +192,43 @@ class ReportPipeline:
                 total += self.rag.indexar_documento_cliente(cliente_id, texto, nombre)
         return total
 
+    def _perfil_bcra(self, cliente_id: str) -> dict | None:
+        """Obtiene el perfil BCRA del asociado (con caché) y lo indexa en el RAG.
+        Devuelve el perfil completo {"resumen":.., "texto":.., "crudo":..}, o None
+        si la integración está deshabilitada / el CUIT es inválido / el API falla
+        sin caché. Nunca corta el informe: cualquier error se traga y devuelve None."""
+        try:
+            from external import perfil_bcra
+            perfil = perfil_bcra(cliente_id)
+        except Exception as e:
+            print(f"[BCRA] error obteniendo perfil: {e}", flush=True)
+            return None
+        if not perfil:
+            return None
+        try:
+            self.rag.indexar_bcra(
+                cliente_id, perfil["texto"],
+                perfil["resumen"].get("periodo_informado") or "",
+            )
+        except Exception as e:
+            print(f"[BCRA] no se pudo indexar el perfil en el RAG: {e}", flush=True)
+        return perfil
+
+    @staticmethod
+    def _bcra_meta(resumen: dict | None) -> dict | None:
+        """Resumen mínimo del perfil BCRA para el badge de la UI (evento meta).
+        Devuelve None si no se consultó el BCRA (no se muestra nada en el badge)."""
+        if not resumen:
+            return None
+        return {
+            "tiene_datos":         bool(resumen.get("tiene_datos")),
+            "peor_situacion":      resumen.get("peor_situacion"),
+            "peor_situacion_desc": resumen.get("peor_situacion_desc"),
+            "cant_entidades":      resumen.get("cant_entidades"),
+            "deuda_total":         resumen.get("deuda_total_sistema"),
+            "cheques_impagos":     resumen.get("cheques_impagos"),
+        }
+
     def _nombre_llm(self) -> str:
         """Nombre legible del modelo que genera el informe (no el extractor)."""
         llm = self.llm
@@ -176,7 +267,8 @@ class ReportPipeline:
         print("[2/5] Calculando score crediticio (ML)...")
         scoring = self.scorer.predict(features)
 
-        print("[3/5] Recuperando contexto cualitativo (pgvector)...")
+        print("[3/5] Recuperando contexto cualitativo (pgvector) + BCRA...")
+        bcra_perfil = self._perfil_bcra(cliente_id)
         rag_context = self.rag.recuperar_contexto_completo(cliente_id, tipo_decision)
 
         contexto = {
@@ -189,12 +281,15 @@ class ReportPipeline:
             "saldos_cuentas":      saldos,
             "gestiones_mora":      gestiones,
             "scoring":             scoring,
+            "bcra":                (bcra_perfil or {}).get("resumen"),
             "rag":                 rag_context,
         }
 
         print("[4/5] Generando informe por secciones...")
         from llm.report_sections import armar_informe
-        informe_texto = armar_informe(contexto, self.llm)
+        # El LLM recibe los importes ya formateados (string); el contexto crudo
+        # se conserva para validación, log y juez.
+        informe_texto = armar_informe(_fmt_montos_contexto(contexto), self.llm)
 
         print("[5/5] Validando y guardando en PostgreSQL...")
         validacion = self.validator.validar(informe_texto, contexto)
@@ -255,6 +350,7 @@ class ReportPipeline:
         scoring = self.scorer.predict(features)
 
         yield {"tipo": "etapa", "clave": "rag"}
+        bcra_perfil = self._perfil_bcra(cliente_id)
         rag_context = self.rag.recuperar_contexto_completo(cliente_id, tipo_decision)
 
         contexto = {
@@ -268,6 +364,7 @@ class ReportPipeline:
             "saldos_cuentas":      saldos,
             "gestiones_mora":      gestiones,
             "scoring":             scoring,
+            "bcra":                (bcra_perfil or {}).get("resumen"),
             "rag":                 rag_context,
         }
 
@@ -275,7 +372,8 @@ class ReportPipeline:
                "encontrado": True,
                "modelo": self._nombre_llm(),
                "score": scoring.get("score"),
-               "nivel": scoring.get("nivel_riesgo")}
+               "nivel": scoring.get("nivel_riesgo"),
+               "bcra":  self._bcra_meta((bcra_perfil or {}).get("resumen"))}
 
         yield {"tipo": "etapa", "clave": "llm"}
         # Generación por secciones, en streaming. armar_informe_stream emite
@@ -283,7 +381,9 @@ class ReportPipeline:
         # ya ordenado (Resumen arriba) para el render final.
         from llm.report_sections import armar_informe_stream
         informe_texto = ""
-        for ev in armar_informe_stream(contexto, self.llm):
+        # El LLM recibe los importes ya formateados (string); el contexto crudo
+        # se conserva para validación, log y juez.
+        for ev in armar_informe_stream(_fmt_montos_contexto(contexto), self.llm):
             if ev["tipo"] == "informe":
                 informe_texto = ev["texto"]
             else:                       # "seccion" / "token" -> se reenvían a la UI
@@ -301,38 +401,77 @@ class ReportPipeline:
     def _stream_informe_sin_datos(self, cliente_id: str, tipo_decision: str,
                                   razon_social: str):
         """Genera un informe para un solicitante que NO está en la Base
-        Financiera, usando solo la identificación provista. No corre ML ni RAG."""
+        Financiera. No corre ML ni RAG interno, pero SÍ consulta el BCRA: aunque
+        no sea socio, puede registrar deuda en otras entidades o cheques
+        rechazados. Si hay datos del BCRA, se incorporan al informe."""
         from langchain_core.prompts import ChatPromptTemplate
         from langchain_core.output_parsers import StrOutputParser
+
+        # Aunque no esté en la base interna, consultamos el BCRA por el CUIT.
+        bcra_perfil  = self._perfil_bcra(cliente_id)
+        bcra_resumen = (bcra_perfil or {}).get("resumen") or {}
+        bcra_texto   = (bcra_perfil or {}).get("texto") or ""
+        tiene_bcra   = bool(bcra_resumen.get("tiene_datos"))
+
+        # La sección BCRA solo se incluye si efectivamente se pudo consultar.
+        secciones = "Resumen Ejecutivo, Clasificación de Riesgo, Historial Crediticio"
+        if bcra_perfil:
+            secciones += ", Situación en el Sistema Financiero (BCRA)"
+        secciones += ", Recomendación"
+
+        if tiene_bcra:
+            regla_bcra = (
+                "- SÍ disponés de información del BCRA (Central de Deudores) en el "
+                "contexto. Reportala con precisión en la sección 'Situación en el "
+                "Sistema Financiero (BCRA)': entidades donde registra deuda, peor "
+                "situación (escala 1=normal a 5=irrecuperable), deuda total y cheques "
+                "rechazados/impagos. No inventes nada fuera de ese contexto. Esta "
+                "información externa SÍ permite una evaluación crediticia parcial.\n"
+            )
+        elif bcra_perfil:
+            regla_bcra = (
+                "- Se consultó el BCRA y no se hallaron registros externos de deuda "
+                "ni cheques rechazados; indicalo en prosa (es una señal favorable), "
+                "sin inferir nada más.\n"
+            )
+        else:
+            regla_bcra = (
+                "- No se pudo consultar el BCRA; no menciones la Central de Deudores.\n"
+            )
 
         SYS = (
             "Sos un analista crediticio de una institución financiera. Vas a "
             "redactar un informe en Markdown para un solicitante del cual NO se "
             "encontraron datos en la base financiera interna.\n"
             "Reglas:\n"
-            "- No inventes historial, montos, score ni datos: no hay información "
-            "financiera disponible.\n"
-            "- Dejá explícito que no se hallaron registros y que no es posible "
-            "realizar una evaluación crediticia con la información disponible.\n"
+            "- No inventes historial interno, montos ni score de la entidad: no hay "
+            "información financiera interna disponible.\n"
+            "- Dejá explícito que no se hallaron registros internos; la evaluación se "
+            "apoya únicamente en información externa (BCRA), si la hay.\n"
+            + regla_bcra +
+            "- En Historial Crediticio aclará que no hay historial interno en la "
+            "entidad.\n"
             "- Recomendá verificación manual de identidad y alta de datos antes "
             "de avanzar.\n"
-            "- Estructurá con títulos Markdown (##): Resumen Ejecutivo, "
-            "Clasificación de Riesgo, Historial Crediticio, Recomendación.\n"
-            "- En Clasificación de Riesgo indicá **Nivel:** SIN DATOS.\n"
+            f"- Estructurá con títulos Markdown (##): {secciones}.\n"
+            "- En Clasificación de Riesgo indicá **Nivel:** SIN DATOS INTERNOS.\n"
             "- No uses bloques de código.\n"
             "- Terminá con: La decisión final corresponde al oficial de crédito."
         )
         HUM = (
-            "Solicitante NO encontrado en la base financiera.\n"
+            "Solicitante NO encontrado en la base financiera interna.\n"
             "- Razón social informada: {razon_social}\n"
             "- CUIT: {cuit}\n"
             "- Motivo de la consulta: {tipo_decision}\n\n"
+            "Información del BCRA (Central de Deudores):\n{bcra}\n\n"
             "Redactá el informe correspondiente."
         )
 
-        # meta sin score; marca que NO se encontró (la UI mostrará la razón social)
-        yield {"tipo": "meta", "encontrado": False, "nivel": "SIN DATOS",
-               "modelo": self._nombre_llm()}
+        # meta sin score; marca que NO se encontró (la UI mostrará la razón social).
+        # Si el BCRA trajo algo, se adjunta para que el badge lo muestre.
+        yield {"tipo": "meta", "encontrado": False, "nivel": "SIN DATOS INTERNOS",
+               "modelo": self._nombre_llm(),
+               "bcra": self._bcra_meta(bcra_resumen if bcra_perfil else None)}
         yield {"tipo": "etapa", "clave": "llm"}
 
         chain = (
@@ -345,6 +484,7 @@ class ReportPipeline:
             "razon_social": razon_social or "(no informada)",
             "cuit":         cliente_id,
             "tipo_decision": tipo_decision,
+            "bcra":         bcra_texto or "No se obtuvieron datos del BCRA.",
         }):
             partes.append(chunk)
             yield {"tipo": "token", "texto": chunk}
@@ -356,7 +496,16 @@ class ReportPipeline:
                 "cliente_id":    cliente_id,
                 "tipo_decision": tipo_decision,
                 "scoring":       {"score": None, "nivel": "SIN DATOS"},
-                "trazabilidad":  {"sin_datos": True, "razon_social": razon_social},
+                "trazabilidad":  {
+                    "sin_datos_internos": True,
+                    "razon_social":       razon_social,
+                    "bcra": {
+                        "consultado":      bool(bcra_perfil),
+                        "tiene_datos":     tiene_bcra,
+                        "peor_situacion":  bcra_resumen.get("peor_situacion"),
+                        "cheques_impagos": bcra_resumen.get("cheques_impagos"),
+                    },
+                },
             }
             validacion = {"aprobado": True, "advertencias": []}
             self._guardar_log(ctx_log, informe_texto, validacion, "")
@@ -364,13 +513,23 @@ class ReportPipeline:
             import traceback as _tb
             _tb.print_exc()
 
-        yield {"tipo": "validacion",
-               "aprobado": True,
-               "advertencias": [
-                   "No se encontraron datos financieros del cliente en la base. "
-                   "El informe se generó en base a la identificación provista y "
-                   "requiere verificación manual."
-               ]}
+        if tiene_bcra:
+            advertencia = (
+                "No se encontraron datos internos del cliente. El informe se apoya "
+                "en la identificación provista y en la información del BCRA (Central "
+                "de Deudores); requiere verificación manual de identidad."
+            )
+        else:
+            advertencia = (
+                "No se encontraron datos financieros del cliente en la base interna "
+                "ni registros en el BCRA. El informe se generó en base a la "
+                "identificación provista y requiere verificación manual."
+                if bcra_perfil else
+                "No se encontraron datos financieros del cliente en la base. "
+                "El informe se generó en base a la identificación provista y "
+                "requiere verificación manual."
+            )
+        yield {"tipo": "validacion", "aprobado": True, "advertencias": [advertencia]}
         yield {"tipo": "fin"}
 
     def _guardar_log(self, ctx, informe, validacion, oficial):
@@ -401,6 +560,7 @@ class ReportPipeline:
             ps.commit()
 
     def _trazabilidad(self, ctx) -> dict:
+        bcra = ctx.get("bcra") or {}
         return {
             "fuentes_sql_server": ["clientes", "prestamos", "cuotas",
                                    "saldos_diarios", "gestiones_mora"],
@@ -409,6 +569,12 @@ class ReportPipeline:
                 "politicas":      len(ctx["rag"]["politicas"]),
                 "normativa":      len(ctx["rag"]["normativa"]),
                 "informes_prev":  len(ctx["rag"]["informes_previos"]),
+            },
+            "bcra": {
+                "consultado":      bool(ctx.get("bcra")),
+                "peor_situacion":  bcra.get("peor_situacion"),
+                "cant_entidades":  bcra.get("cant_entidades"),
+                "cheques_impagos": bcra.get("cheques_impagos"),
             },
             "modelo_scoring": "XGBoost v1.0",
             "modelo_llm":     self._nombre_llm(),

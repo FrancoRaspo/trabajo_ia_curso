@@ -30,7 +30,9 @@ pandas>=2.0.0
 numpy>=1.26.0
 
 # ── PDF ──────────────────────────────────────────────────────────────
-pypdf>=4.0.0
+pypdf>=4.0.0                             # lectura de PDFs adjuntos
+markdown>=3.5                            # Markdown -> HTML (export del informe a PDF)
+xhtml2pdf>=0.2.16                        # HTML+CSS -> PDF (endpoint /api/informe/pdf)
 
 # ── Utilidades ───────────────────────────────────────────────────────
 python-dotenv>=1.0.0
