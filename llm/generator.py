@@ -7,12 +7,37 @@ from langchain_core.output_parsers import StrOutputParser
 import os
 
 
+def _ollama_local(modelo: str):
+    """Construye el cliente Ollama para un modelo local (por nombre)."""
+    # ChatOllama (langchain-ollama) reemplaza a la clase Ollama deprecada.
+    from langchain_ollama import ChatOllama
+    kwargs = dict(
+        model=modelo,
+        temperature=0.1,
+        num_ctx=8192,
+        num_predict=4096,     # techo de tokens de salida (informe completo)
+        keep_alive="30m",     # no descargar el modelo entre pedidos
+    )
+    # `reasoning=False` apaga el "thinking" de qwen3 (más rápido). Modelos que
+    # no soportan thinking (gemma, etc.) devuelven error si se les pasa el flag.
+    if modelo.startswith(("qwen", "deepseek", "magistral")):
+        kwargs["reasoning"] = False
+    return ChatOllama(**kwargs)
+
+
 def get_llm(provider: str = "anthropic"):
     """
     Prototipo/Curso:    API de Anthropic, OpenAI o Gemini.
     Producción real:    Modelo local (Ollama) para no enviar datos de
                         clientes a servicios externos.
+
+    `provider` puede ser:
+      - un proveedor conocido: "anthropic" / "gemini" / "openai" / "local"
+        ("local" toma el nombre del modelo de la env LOCAL_LLM), o
+      - directamente el NOMBRE de un modelo local de Ollama (ej. "gemma4:latest",
+        "qwen3:14b"), en cuyo caso se usa Ollama con ese modelo.
     """
+    provider = (provider or "").strip()
     if provider == "anthropic":
         return ChatAnthropic(
             model=os.environ["ANTHROPIC_LLM"],
@@ -50,15 +75,11 @@ def get_llm(provider: str = "anthropic"):
         )
     elif provider == "local":
         # Producción con datos reales — sin envío a servicios externos.
-        # ChatOllama (langchain-ollama) reemplaza a la clase Ollama deprecada.
-        from langchain_ollama import ChatOllama
-        return ChatOllama(
-            model=os.environ["LOCAL_LLM"],
-            temperature=0.1,
-            num_ctx=8192,
-            num_predict=4096,     # techo de tokens de salida (informe completo)
-            keep_alive="30m",     # no descargar el modelo entre pedidos
-            reasoning=False,      # apaga el "thinking" de qwen3 (más rápido)
-        )
+        # El nombre del modelo viene de la env LOCAL_LLM.
+        return _ollama_local(os.environ["LOCAL_LLM"])
+    elif provider:
+        # No es un proveedor conocido -> se interpreta como el NOMBRE de un modelo
+        # local de Ollama (ej. "gemma4:latest", "qwen3:14b").
+        return _ollama_local(provider)
     else:
-        raise ValueError(f"Provider desconocido: {provider}")
+        raise ValueError(f"Provider desconocido: {provider!r}")
