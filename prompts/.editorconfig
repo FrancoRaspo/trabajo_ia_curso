@@ -1,0 +1,10 @@
+# Los .txt de esta carpeta son PROMPTS que se envían tal cual al modelo.
+# No hay que reformatearlos ni hacer "hard wrap": un salto de línea agregado
+# cambia el texto que recibe el modelo. Este archivo le pide al editor
+# (JetBrains, VS Code con plugin EditorConfig, etc.) que NO los toque.
+root = false
+
+[*.txt]
+max_line_length = off
+trim_trailing_whitespace = false
+insert_final_newline = true

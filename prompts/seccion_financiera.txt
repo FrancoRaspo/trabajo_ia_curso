@@ -1,0 +1,1 @@
+Presentá la identificación e información financiera del cliente: nombre/identificación, ingreso declarado, actividad económica, antigüedad, estado y saldos promedio. Solo hechos, sin adjetivar.

@@ -1,0 +1,7 @@
+## DATOS FUENTE (única verdad)
+{datos_fuente}
+
+## INFORME A EVALUAR
+{informe}
+
+Auditá el informe contra los datos fuente y devolvé el JSON.

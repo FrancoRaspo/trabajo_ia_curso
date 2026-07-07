@@ -1,0 +1,9 @@
+Solicitante NO encontrado en la base financiera interna.
+- Razón social informada: {razon_social}
+- CUIT: {cuit}
+- Motivo de la consulta: {tipo_decision}
+
+Información del BCRA (Central de Deudores):
+{bcra}
+
+Redactá el informe correspondiente.

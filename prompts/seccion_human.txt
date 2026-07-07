@@ -1,0 +1,4 @@
+Contexto (JSON):
+{ctx}
+
+Redactá la sección pedida.

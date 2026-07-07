@@ -14,6 +14,7 @@ from db.sqlserver_connection import get_sqlserver_session
 from db.postgres_connection import get_postgres_session
 from db.client_repository import ClientRepository
 from ml.scoring_model import CreditScoringModel
+from prompts import load as load_prompt   # textos de prompts en prompts/*.txt
 print("[DBG] project modules imported", flush=True)
 
 
@@ -139,22 +140,8 @@ class ReportPipeline:
         from langchain_core.prompts import ChatPromptTemplate
         from langchain_core.output_parsers import StrOutputParser
 
-        SYS = (
-            "Analizás una consulta y devolvés SOLO un objeto JSON válido, sin "
-            "texto adicional, sin explicaciones y sin bloques de código.\n"
-            "Primero determiná si la consulta es una SOLICITUD CREDITICIA "
-            "(pedido de crédito, préstamo, financiación o evaluación crediticia "
-            "de un asociado/empresa). Si NO lo es (por ejemplo un tema personal "
-            "o ajeno a lo financiero), poné es_credito en false y el resto vacío.\n"
-            "Claves exactas:\n"
-            '  "es_credito": true o false.\n'
-            '  "cuit": solo los 11 dígitos, sin guiones ni espacios.\n'
-            '  "razon_social": nombre de la persona o empresa.\n'
-            '  "motivo": resumen breve de lo que solicita.\n'
-            "Si un dato no aparece, usá cadena vacía. No inventes el CUIT: "
-            "copialo tal como aparece en la consulta. /no_think"
-        )
-        HUM = "Consulta: {consulta}"
+        SYS = load_prompt("extractor_sys")
+        HUM = load_prompt("extractor_hum")
         chain = (
             ChatPromptTemplate.from_messages([("system", SYS), ("human", HUM)])
             | self.extractor
@@ -419,53 +406,18 @@ class ReportPipeline:
             secciones += ", Situación en el Sistema Financiero (BCRA)"
         secciones += ", Recomendación"
 
+        # Fragmento de regla BCRA según lo que se obtuvo (textos en prompts/*.txt).
+        # El .txt guarda el bullet sin el salto final; el esqueleto lo necesita, se agrega acá.
         if tiene_bcra:
-            regla_bcra = (
-                "- SÍ disponés de información del BCRA (Central de Deudores) en el "
-                "contexto. Reportala con precisión en la sección 'Situación en el "
-                "Sistema Financiero (BCRA)': entidades donde registra deuda, peor "
-                "situación (escala 1=normal a 5=irrecuperable), deuda total y cheques "
-                "rechazados/impagos. No inventes nada fuera de ese contexto. Esta "
-                "información externa SÍ permite una evaluación crediticia parcial.\n"
-            )
+            regla_bcra = load_prompt("sin_datos_regla_bcra_con_datos") + "\n"
         elif bcra_perfil:
-            regla_bcra = (
-                "- Se consultó el BCRA y no se hallaron registros externos de deuda "
-                "ni cheques rechazados; indicalo en prosa (es una señal favorable), "
-                "sin inferir nada más.\n"
-            )
+            regla_bcra = load_prompt("sin_datos_regla_bcra_sin_datos") + "\n"
         else:
-            regla_bcra = (
-                "- No se pudo consultar el BCRA; no menciones la Central de Deudores.\n"
-            )
+            regla_bcra = load_prompt("sin_datos_regla_bcra_no_consultado") + "\n"
 
-        SYS = (
-            "Sos un analista crediticio de una institución financiera. Vas a "
-            "redactar un informe en Markdown para un solicitante del cual NO se "
-            "encontraron datos en la base financiera interna.\n"
-            "Reglas:\n"
-            "- No inventes historial interno, montos ni score de la entidad: no hay "
-            "información financiera interna disponible.\n"
-            "- Dejá explícito que no se hallaron registros internos; la evaluación se "
-            "apoya únicamente en información externa (BCRA), si la hay.\n"
-            + regla_bcra +
-            "- En Historial Crediticio aclará que no hay historial interno en la "
-            "entidad.\n"
-            "- Recomendá verificación manual de identidad y alta de datos antes "
-            "de avanzar.\n"
-            f"- Estructurá con títulos Markdown (##): {secciones}.\n"
-            "- En Clasificación de Riesgo indicá **Nivel:** SIN DATOS INTERNOS.\n"
-            "- No uses bloques de código.\n"
-            "- Terminá con: La decisión final corresponde al oficial de crédito."
-        )
-        HUM = (
-            "Solicitante NO encontrado en la base financiera interna.\n"
-            "- Razón social informada: {razon_social}\n"
-            "- CUIT: {cuit}\n"
-            "- Motivo de la consulta: {tipo_decision}\n\n"
-            "Información del BCRA (Central de Deudores):\n{bcra}\n\n"
-            "Redactá el informe correspondiente."
-        )
+        SYS = load_prompt("sin_datos_sys").format(regla_bcra=regla_bcra,
+                                                   secciones=secciones)
+        HUM = load_prompt("sin_datos_hum")
 
         # meta sin score; marca que NO se encontró (la UI mostrará la razón social).
         # Si el BCRA trajo algo, se adjunta para que el badge lo muestre.
