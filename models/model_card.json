@@ -1,0 +1,334 @@
+{
+  "generado": "2026-07-12T16:26:57+00:00",
+  "modelo": "XGBClassifier",
+  "xgboost_version": "3.2.0",
+  "target": {
+    "definicion": "alcanza 90+ días de mora por primera vez dentro de la ventana de performance",
+    "horizonte_meses": 12
+  },
+  "poblacion_elegible": "clientes con préstamo abierto al corte, sin default previo (ni mora 90+ ni clasificación de gerencia > 4) y con al menos una cuota venciendo dentro de la ventana de performance",
+  "diseno": "panel de cortes anuales; validación out-of-time",
+  "cutoffs": {
+    "train": [
+      "2015-12-31",
+      "2016-12-31",
+      "2017-12-31",
+      "2018-12-31",
+      "2019-12-31",
+      "2020-12-31",
+      "2021-12-31",
+      "2022-12-31"
+    ],
+    "valid": "2023-12-31",
+    "test": [
+      "2024-12-31",
+      "2025-04-30"
+    ]
+  },
+  "covid_excluido": false,
+  "cutoffs_covid": [
+    "2019-12-31",
+    "2020-12-31"
+  ],
+  "dataset": {
+    "train": {
+      "filas": 7398,
+      "defaults": 475,
+      "clientes_unicos": 2980
+    },
+    "valid": {
+      "filas": 744,
+      "defaults": 26,
+      "clientes_unicos": 741
+    },
+    "test": {
+      "filas": 2208,
+      "defaults": 123,
+      "clientes_unicos": 1360
+    }
+  },
+  "solapamiento_clientes_train_test": 0.4801,
+  "eventos_por_variable": 26.39,
+  "features_usadas": [
+    "total_prestamos",
+    "prestamos_al_dia",
+    "prestamos_con_atraso",
+    "max_dias_atraso_historico",
+    "dias_atraso_promedio",
+    "cuotas_puntuales_24m",
+    "atraso_leve_24m",
+    "atraso_moderado_24m",
+    "saldo_promedio_ahorro_6m",
+    "saldo_minimo_6m",
+    "deuda_vigente_total",
+    "capacidad_pago_estimada",
+    "antiguedad_meses",
+    "productos_activos",
+    "ultimo_prestamo_monto",
+    "ultimo_prestamo_hace_meses",
+    "tasa_cumplimiento",
+    "ratio_deuda_ingresos"
+  ],
+  "features_descartadas_por_constantes": [
+    "prestamos_refinanciados",
+    "saldo_promedio_corriente_6m"
+  ],
+  "features_excluidas_por_fuga": {
+    "prestamos_irrecuperables": "es el target (clasificación > 4)",
+    "atraso_grave_24m": "cuotas con +90d de mora; el target ES +90d de mora"
+  },
+  "hiperparametros": {
+    "objective": "binary:logistic",
+    "base_score": null,
+    "booster": null,
+    "callbacks": null,
+    "colsample_bylevel": null,
+    "colsample_bynode": null,
+    "colsample_bytree": 0.8,
+    "device": null,
+    "early_stopping_rounds": null,
+    "enable_categorical": false,
+    "eval_metric": "aucpr",
+    "feature_types": null,
+    "feature_weights": null,
+    "gamma": null,
+    "grow_policy": null,
+    "importance_type": null,
+    "interaction_constraints": null,
+    "learning_rate": 0.05,
+    "max_bin": null,
+    "max_cat_threshold": null,
+    "max_cat_to_onehot": null,
+    "max_delta_step": null,
+    "max_depth": 3,
+    "max_leaves": null,
+    "min_child_weight": 10,
+    "missing": NaN,
+    "monotone_constraints": null,
+    "multi_strategy": null,
+    "n_estimators": 73,
+    "n_jobs": null,
+    "num_parallel_tree": null,
+    "random_state": 42,
+    "reg_alpha": null,
+    "reg_lambda": 5.0,
+    "sampling_method": null,
+    "scale_pos_weight": null,
+    "subsample": 0.8,
+    "tree_method": null,
+    "validate_parameters": null,
+    "verbosity": null,
+    "nthread": 1
+  },
+  "n_estimators_por_cv_expansiva": {
+    "elegido": 73,
+    "por_fold": [
+      73,
+      17,
+      84,
+      74,
+      46,
+      122
+    ]
+  },
+  "calibracion": {
+    "metodo": "ninguna",
+    "elegida_por": "menor Brier out-of-sample en CV temporal anidada sobre las predicciones out-of-fold",
+    "brier_medio_por_metodo": {
+      "ninguna": 0.04135,
+      "platt_sigmoid": 0.04375,
+      "isotonica": 0.04413
+    },
+    "ajustada_en": "predicciones out-of-fold de la CV expansiva sobre TRAIN",
+    "n_oof": 5668,
+    "prevalencia_oof": 0.0642,
+    "brier_test_crudo": 0.0442,
+    "brier_test_calibrado": 0.0442,
+    "prob_media_predicha_test": 0.0544,
+    "prevalencia_real_test": 0.0557
+  },
+  "metricas": {
+    "train": {
+      "n": 7398,
+      "defaults": 475,
+      "prevalencia": 0.0642,
+      "auc_roc": 0.8917,
+      "pr_auc": 0.4563,
+      "pr_auc_baseline": 0.0642,
+      "ks": 0.6181,
+      "brier": 0.0455
+    },
+    "valid": {
+      "n": 744,
+      "defaults": 26,
+      "prevalencia": 0.0349,
+      "auc_roc": 0.8323,
+      "pr_auc": 0.2109,
+      "pr_auc_baseline": 0.0349,
+      "ks": 0.5326,
+      "brier": 0.0316
+    },
+    "test": {
+      "n": 2208,
+      "defaults": 123,
+      "prevalencia": 0.0557,
+      "auc_roc": 0.8606,
+      "pr_auc": 0.3378,
+      "pr_auc_baseline": 0.0557,
+      "ks": 0.5702,
+      "brier": 0.0442
+    },
+    "baseline_max_dias_atraso_historico_en_test": {
+      "n": 2208,
+      "defaults": 123,
+      "prevalencia": 0.0557,
+      "auc_roc": 0.6556,
+      "pr_auc": 0.1049,
+      "pr_auc_baseline": 0.0557,
+      "ks": 0.3125,
+      "brier": null
+    }
+  },
+  "bandas_riesgo": {
+    "tasa_cartera": 0.0642,
+    "distribucion_en_test": {
+      "MUY ALTO": {
+        "n": 90,
+        "defaults": 35,
+        "tasa_real": 0.3889,
+        "pd_desde": 0.2569,
+        "pd_hasta": 1.01,
+        "ic95_tasa_real": [
+          0.2947,
+          0.4922
+        ],
+        "consistente": true
+      },
+      "ALTO": {
+        "n": 130,
+        "defaults": 29,
+        "tasa_real": 0.2231,
+        "pd_desde": 0.1284,
+        "pd_hasta": 0.2569,
+        "ic95_tasa_real": [
+          0.16,
+          0.302
+        ],
+        "consistente": true
+      },
+      "MODERADO": {
+        "n": 242,
+        "defaults": 20,
+        "tasa_real": 0.0826,
+        "pd_desde": 0.0642,
+        "pd_hasta": 0.1284,
+        "ic95_tasa_real": [
+          0.0541,
+          0.1242
+        ],
+        "consistente": true
+      },
+      "BAJO": {
+        "n": 1746,
+        "defaults": 39,
+        "tasa_real": 0.0223,
+        "pd_desde": 0,
+        "pd_hasta": 0.0642,
+        "ic95_tasa_real": [
+          0.0164,
+          0.0304
+        ],
+        "consistente": true
+      }
+    },
+    "bandas_inconsistentes_en_test": []
+  },
+  "deciles_test": {
+    "1": {
+      "n": 221,
+      "defaults": 64,
+      "tasa_real": 0.2896,
+      "lift": 5.2
+    },
+    "2": {
+      "n": 221,
+      "defaults": 20,
+      "tasa_real": 0.0905,
+      "lift": 1.62
+    },
+    "3": {
+      "n": 221,
+      "defaults": 17,
+      "tasa_real": 0.0769,
+      "lift": 1.38
+    },
+    "4": {
+      "n": 220,
+      "defaults": 10,
+      "tasa_real": 0.0455,
+      "lift": 0.82
+    },
+    "5": {
+      "n": 221,
+      "defaults": 6,
+      "tasa_real": 0.0271,
+      "lift": 0.49
+    },
+    "6": {
+      "n": 221,
+      "defaults": 2,
+      "tasa_real": 0.009,
+      "lift": 0.16
+    },
+    "7": {
+      "n": 220,
+      "defaults": 2,
+      "tasa_real": 0.0091,
+      "lift": 0.16
+    },
+    "8": {
+      "n": 221,
+      "defaults": 1,
+      "tasa_real": 0.0045,
+      "lift": 0.08
+    },
+    "9": {
+      "n": 221,
+      "defaults": 1,
+      "tasa_real": 0.0045,
+      "lift": 0.08
+    },
+    "10": {
+      "n": 221,
+      "defaults": 0,
+      "tasa_real": 0.0,
+      "lift": 0.0
+    }
+  },
+  "importancia_features": {
+    "prestamos_al_dia": 0.44818,
+    "prestamos_con_atraso": 0.23234,
+    "dias_atraso_promedio": 0.05354,
+    "max_dias_atraso_historico": 0.03806,
+    "atraso_leve_24m": 0.02955,
+    "antiguedad_meses": 0.02644,
+    "cuotas_puntuales_24m": 0.02482,
+    "total_prestamos": 0.02126,
+    "ultimo_prestamo_hace_meses": 0.02112,
+    "saldo_promedio_ahorro_6m": 0.01966,
+    "atraso_moderado_24m": 0.01876,
+    "productos_activos": 0.01597,
+    "ratio_deuda_ingresos": 0.01595,
+    "tasa_cumplimiento": 0.01565,
+    "deuda_vigente_total": 0.01103,
+    "ultimo_prestamo_monto": 0.00767,
+    "saldo_minimo_6m": 0.0,
+    "capacidad_pago_estimada": 0.0
+  },
+  "limitaciones": [
+    "El mismo cliente aparece en varios cortes del panel; 48.0% de los clientes de TEST también están en TRAIN.",
+    "La ventana de performance de los cortes 2019 y 2020 cae en las moratorias de COVID: la mora observada está deprimida.",
+    "La población elegible es ~10% de la cartera: sólo quienes tienen una cuota venciendo en la ventana pueden defaultear por definición.",
+    "El scoring aplica sólo a clientes con historial de préstamos; para thin-file el modelo no tiene señal."
+  ]
+}

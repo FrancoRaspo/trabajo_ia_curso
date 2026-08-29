@@ -1,0 +1,81 @@
+{
+  "criterio": "múltiplos de la tasa de default de la cartera sobre la PD",
+  "tasa_cartera": 0.0642,
+  "bandas": [
+    {
+      "nivel": "MUY ALTO",
+      "semaforo": "ROJO",
+      "pd_desde": 0.25688073394495414,
+      "pd_hasta": 1.01
+    },
+    {
+      "nivel": "ALTO",
+      "semaforo": "NARANJA",
+      "pd_desde": 0.12844036697247707,
+      "pd_hasta": 0.25688073394495414
+    },
+    {
+      "nivel": "MODERADO",
+      "semaforo": "AMARILLO",
+      "pd_desde": 0.06422018348623854,
+      "pd_hasta": 0.12844036697247707
+    },
+    {
+      "nivel": "BAJO",
+      "semaforo": "VERDE",
+      "pd_desde": -0.01,
+      "pd_hasta": 0.06422018348623854
+    }
+  ],
+  "distribucion_en_test": {
+    "MUY ALTO": {
+      "n": 90,
+      "defaults": 35,
+      "tasa_real": 0.3889,
+      "pd_desde": 0.2569,
+      "pd_hasta": 1.01,
+      "ic95_tasa_real": [
+        0.2947,
+        0.4922
+      ],
+      "consistente": true
+    },
+    "ALTO": {
+      "n": 130,
+      "defaults": 29,
+      "tasa_real": 0.2231,
+      "pd_desde": 0.1284,
+      "pd_hasta": 0.2569,
+      "ic95_tasa_real": [
+        0.16,
+        0.302
+      ],
+      "consistente": true
+    },
+    "MODERADO": {
+      "n": 242,
+      "defaults": 20,
+      "tasa_real": 0.0826,
+      "pd_desde": 0.0642,
+      "pd_hasta": 0.1284,
+      "ic95_tasa_real": [
+        0.0541,
+        0.1242
+      ],
+      "consistente": true
+    },
+    "BAJO": {
+      "n": 1746,
+      "defaults": 39,
+      "tasa_real": 0.0223,
+      "pd_desde": 0,
+      "pd_hasta": 0.0642,
+      "ic95_tasa_real": [
+        0.0164,
+        0.0304
+      ],
+      "consistente": true
+    }
+  },
+  "bandas_inconsistentes_en_test": []
+}

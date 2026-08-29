@@ -1,0 +1,49 @@
+{
+  "metodo": "ninguna",
+  "seleccion": {
+    "criterio": "menor Brier out-of-sample en CV temporal anidada sobre las OOF",
+    "brier_medio_por_metodo": {
+      "ninguna": 0.04135,
+      "platt_sigmoid": 0.04375,
+      "isotonica": 0.04413
+    },
+    "folds": [
+      {
+        "calibra_en": "≤2018-12-31",
+        "mide_en": "2019-12-31",
+        "n": 980,
+        "defaults": 82,
+        "ninguna": 0.06115,
+        "platt_sigmoid": 0.06793,
+        "isotonica": 0.06886
+      },
+      {
+        "calibra_en": "≤2019-12-31",
+        "mide_en": "2020-12-31",
+        "n": 782,
+        "defaults": 29,
+        "ninguna": 0.03128,
+        "platt_sigmoid": 0.03357,
+        "isotonica": 0.03338
+      },
+      {
+        "calibra_en": "≤2020-12-31",
+        "mide_en": "2021-12-31",
+        "n": 847,
+        "defaults": 31,
+        "ninguna": 0.03154,
+        "platt_sigmoid": 0.0303,
+        "isotonica": 0.03241
+      },
+      {
+        "calibra_en": "≤2021-12-31",
+        "mide_en": "2022-12-31",
+        "n": 959,
+        "defaults": 48,
+        "ninguna": 0.04145,
+        "platt_sigmoid": 0.04319,
+        "isotonica": 0.04188
+      }
+    ]
+  }
+}

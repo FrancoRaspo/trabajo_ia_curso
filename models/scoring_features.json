@@ -1,0 +1,20 @@
+[
+  "total_prestamos",
+  "prestamos_al_dia",
+  "prestamos_con_atraso",
+  "max_dias_atraso_historico",
+  "dias_atraso_promedio",
+  "cuotas_puntuales_24m",
+  "atraso_leve_24m",
+  "atraso_moderado_24m",
+  "saldo_promedio_ahorro_6m",
+  "saldo_minimo_6m",
+  "deuda_vigente_total",
+  "capacidad_pago_estimada",
+  "antiguedad_meses",
+  "productos_activos",
+  "ultimo_prestamo_monto",
+  "ultimo_prestamo_hace_meses",
+  "tasa_cumplimiento",
+  "ratio_deuda_ingresos"
+]
