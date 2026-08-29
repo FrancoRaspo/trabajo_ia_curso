@@ -17,7 +17,9 @@ Lo que está flojo es **todo lo que lo rodea**: el harness de evaluación del in
 > 1. **Trazabilidad** — el log auditable declaraba 5 tablas que no existen y un `"XGBoost v1.0"` hardcodeado. Ahora publica las 27 tablas reales y la identidad del modelo desde el model card, con un test que impide que vuelva a divergir.
 > 2. **Banda MODERADO** — no era la banda: era la **calibración de Platt**, que sub-predecía en la zona media-alta. Eliminada. Las 4 bandas cierran en los 3 splits y el Brier de test mejoró (0,0452 → 0,0442). El AUC no cambia: la calibración es monótona y no altera el ranking.
 >
-> Sobre el tercer bloqueante (golden set): se **verificó** y se cerró la mayoría de las causas (fechas, CUIT, SQL, conteo de cartera, género), llegando a **6/9 (67 %)**, juez 4,175. Los 3 casos que resisten son techo del modelo local (contradicciones internas + varianza), no bugs de prompt/datos. Sigue **en progreso**: la sección Historial ya se arma por plantilla (sin LLM) y los agregados de cartera viajan ya redactados (4.4c); falta re-correr el golden para medir el efecto. Ver 4.4, 4.4b y 4.4c.
+> Sobre el tercer bloqueante (golden set): se **verificó** y se cerró la mayoría de las causas (fechas, CUIT, SQL, conteo de cartera, género), y se llegó a citar **6/9 (67 %)**. Sigue **en progreso**. Ver 4.4, 4.4b, 4.4c y sobre todo **4.4d**.
+>
+> **Corrección del 29-ago-2026 (4.4d).** Ese 67 % no era el estado del sistema sino una corrida afortunada: medida la varianza con 3 corridas idénticas, el pass/fail por caso tiene un cv del **25 %** (3/9, 5/9, 4/9) contra **1,2 % del juez**. Dos corridas pasaron los mismos 40 checks de 49 y dieron 3/9 y 5/9. El estado honesto es **juez ≈ 4,2 y ~40/49 checks**, y las decisiones pasan a tomarse con esas métricas.
 
 ---
 
@@ -266,7 +268,32 @@ Efecto colateral: el informe hace **una llamada menos al LLM** (5 secciones en v
 
 > **⚠️ El pass/fail sobre 9 casos es ruidoso.** Las tres corridas dieron 6/9 → 5/9 → 4/9, pero **los casos que fallan cambian en cada una** (`muy_alto_1` falla y después pasa; `bajo_2` pasa y después falla) mientras las métricas continuas mejoran (juez 3,95 → 4,03; faithfulness 0,809 → 0,855). Con 9 casos y modelos con temperatura, una diferencia de ±1 caso **no es señal**. Antes de seguir optimizando contra ese número hay que **medir la varianza del harness** (misma config, 2-3 corridas) y decidir con métricas continuas o con más casos.
 
-**Pendiente:** re-correr el golden con la versión final (se quitó el máximo histórico agregado, quedó sin medir); medir varianza; correr opus/qwen3:14b. Las fallas que quedan ya **no son de conteo** sino de **razonamiento de política** (recomienda aprobar con score < 700; no advierte `estado_actual = 'Baja'`) — eso es prompt de Recomendación/Cumplimiento, o techo del modelo.
+### 4.4d — Varianza del harness: MEDIDA (29-ago-2026)
+
+Se corrió el golden set **3 veces sin tocar nada** (gemma4:latest, mismo código, misma config). Resultado:
+
+| Métrica | c1 | c2 | c3 | cv |
+|---|---|---|---|---|
+| **Casos que pasan** | 3/9 | 5/9 | 4/9 | **25,1 %** |
+| **Checks que pasan** | 40/49 | 40/49 | 41/49 | **1,5 %** |
+| **Juez** | 4,15 | 4,20 | 4,25 | **1,2 %** |
+| Faithfulness | 0,832 | 0,826 | 0,774 | 3,9 % |
+
+**El pass/fail por caso es ~21× más ruidoso que el juez, y la sospecha quedó confirmada.** Las corridas 1 y 2 pasaron **exactamente los mismos 40 checks de 49** y dieron 3/9 y 5/9 casos respectivamente. El sistema rindió idéntico; lo único que cambió fue cómo se repartieron los 9 fallos entre los casos. Es azar de agrupamiento.
+
+**Consecuencia que obliga a corregir el relato de este documento:** la mejora de julio de **44 % → 67 %** (+0,223) **no supera el umbral de credibilidad de una sola corrida (0,315 ≈ 2,8 casos)**. Los arreglos de 4.4b eran defectos reales, verificados uno por uno contra la base, y las métricas continuas sí mejoraron — pero *el salto en el número de casos no fue lo que los demostró*. Ese 67 % era, en buena medida, una corrida afortunada. El 6/9 citado más arriba y en la tabla de la sección 8 hay que leerlo así.
+
+**Nuevo criterio de decisión** (detalle en `docs/evaluacion.md`):
+- Se decide con **el juez y `checks_pass_rate`**, no con el pass/fail por caso.
+- Un cambio se acepta si mueve el juez **> 0,14** (una corrida) o **> 0,08** (promedio de 3).
+- El pass/fail queda como resumen y como exit code de CI, no como medida de progreso.
+- Para que el pass/fail detectara una mejora de un solo caso harían falta **~9 corridas** por configuración (~4,5 h).
+
+**Señal vs ruido, al 29-ago:** fallan *siempre* `moderado_1`, `moderado_2`, `alto_1`, `alto_2` → ahí hay algo real. Alternan `bajo_1` y `bajo_2` → no vale optimizarlos. El check que más alterna es `sin_alucinaciones` (5 de 10 flips), lo esperable en un juicio de LLM sobre texto de otro LLM.
+
+Herramienta: `evaluation/varianza.py` (`python evaluation/varianza.py --etiqueta var`).
+
+**Pendiente:** correr opus/qwen3:14b (ahora sí con criterio para interpretarlo). Las fallas que quedan ya **no son de conteo** sino de **razonamiento de política** (recomienda aprobar con score < 700; no advierte `estado_actual = 'Baja'`) — eso es prompt de Recomendación/Cumplimiento, o techo del modelo.
 
 > **Efecto lateral positivo (trazabilidad):** el `cartera_resumen` creado para este arreglo alimenta además una feature nueva — bajo cada sección del informe, un resumen legible de los datos fuente con los que se generó (visible para todo lector), para hacer auditable la relación dato→texto. Backend en `resumen_datos_secciones()` (report_sections.py), emitido en el evento `fin`; front colapsable por sección en `app.py`.
 
@@ -322,7 +349,7 @@ La diferencia con los burós no es la performance, es la **cobertura**: ellos ve
 |---|---|---|---|
 | 1 | **Reparar `trazabilidad`** | ✅ **hecho** (2026-07-12) | El campo de auditoría contenía **tablas inventadas** (`clientes`, `prestamos`, `saldos_diarios`… ninguna existe) y `"modelo_scoring": "XGBoost v1.0"` hardcodeado. Ahora publica las 27 tablas reales desde `TABLAS_SQLSERVER` y la identidad del modelo desde `model_card.json`; `tests/test_trazabilidad.py` extrae las tablas del SQL fuente y falla si la lista se desincroniza |
 | 2 | **Investigar la banda MODERADO** | ✅ **hecho** (2026-07-12) | No era la banda: era la **calibración de Platt**. Eliminada. Las 4 bandas cierran en los 3 splits y el Brier de test mejoró (0,0452 → 0,0442). Ver 3.5 y 3.6 |
-| 3 | **Cerrar el golden set** | 🔄 en progreso | Fechas/CUIT/SQL/conteo-de-cartera/género resueltos y **verificados** (4.4b). Techo actual **6/9 (67 %)**, juez 4,175. Los 3 que resisten ya no son bugs de prompt/datos: `moderado_2` se contradice (el dato bueno aparece pero fabrica en otra sección) y `alto_1/alto_2` tienen alta varianza — es techo de gemma4. El lever definitivo ya está aplicado (4.4c): **Historial por plantilla, sin LLM**, y agregados de cartera pre-redactados; falta re-correr el golden para medirlo. Hasta que no dé verde no podemos decir que el sistema es confiable — y el readme ya lo dice |
+| 3 | **Cerrar el golden set** | 🔄 en progreso | Fechas/CUIT/SQL/conteo-de-cartera/género resueltos y **verificados** (4.4b); Historial por plantilla sin LLM (4.4c). Estado medido con 3 corridas (4.4d): **juez 4,2 y ~40/49 checks**, estables; el pass/fail por caso oscila 3/9–5/9 y **no sirve para medir progreso** (cv 25 %). Fallan siempre `moderado_1`, `moderado_2`, `alto_1`, `alto_2`: ahí está el trabajo real, y ya no es conteo sino **razonamiento de política**. Hasta que eso no cierre no podemos decir que el sistema es confiable — y el readme ya lo dice |
 | 4 | **Pinear `xgboost==3.2.*`** | ⬜ pendiente | `requirements.txt` dice `>=2.0.0`, pero `load()` lanza `RuntimeError` si el major no coincide → una instalación limpia **no arranca**. Ninguna dependencia está pineada |
 
 ### 7.2 Requisitos regulatorios (model risk management, tipo SR 11-7)

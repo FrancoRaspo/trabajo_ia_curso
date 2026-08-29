@@ -62,15 +62,32 @@ flowchart TD
    > un umbral de "cero alucinaciones" reprobaba casi todos los informes —incluso
    > los de un modelo fuerte— y no discriminaba calidad.
 3. **RAGas**: `faithfulness` (¿cada afirmación del informe se sostiene en el
-   contexto recuperado del RAG?) y `answer_relevancy` (¿la respuesta responde al
-   motivo?). Miden la calidad del pipeline RAG sin ground truth escrito a mano.
+   contexto recuperado del RAG?). Mide la calidad del pipeline RAG sin ground
+   truth escrito a mano, y sí decide pass/fail.
 
-   > **`answer_relevancy` es informativa (no gatea pass/fail).** RAGas la calcula
-   > regenerando "preguntas" desde la respuesta y comparándolas con la pregunta
-   > original. Acá el "motivo" es una *solicitud de decisión* (no una pregunta) y
-   > el informe es un *análisis completo* (no una respuesta Q&A), así que la métrica
-   > tiende a 0 por desajuste estructural, no por baja calidad. Se reporta como
-   > referencia pero su umbral está en `null`. `faithfulness` sí decide pass/fail.
+   > **`answer_relevancy` está apagada por defecto — medido, no supuesto.**
+   > Su fórmula interna es
+   > `score = cosine_sim(motivo, preguntas_generadas).mean() * int(not all_noncommittal)`,
+   > y el segundo factor la colapsa a **0 exacto** cuando el LLM juzga la
+   > respuesta "noncommittal". Comprobado el 29-ago-2026 sobre informes reales:
+   >
+   > | Entrada | `noncommittal` | score |
+   > |---|---|---|
+   > | Informe completo (5.458 ch) | `[1,1,1]` | 0,0 |
+   > | Sólo la sección Recomendación (900 ch) | `[1,1,1]` | 0,0 |
+   > | Control: respuesta corta y tajante, mismo contenido | `[0,0,0]` | >0 |
+   >
+   > No es la forma de la pregunta (se probó el motivo tal cual, reformulado como
+   > pregunta y una pregunta genérica: las tres dan 0) ni el largo (la sección
+   > sola también da 0). Las preguntas que genera son correctas — el problema es
+   > el flag. La métrica está pensada para Q&A corto y un informe multi-sección
+   > nunca tiene esa forma.
+   >
+   > Lo que la descalifica no es el sesgo sino que el colapso es **intermitente**:
+   > 2 de 8 casos por corrida, y *casos distintos en cada corrida*. Eso inyecta
+   > ruido en vez de medir. Ningún caso gateaba por ella (todos los umbrales en
+   > `null`), así que apagarla no cambia ningún veredicto y ahorra 3 llamadas al
+   > LLM por caso. Se reactiva con `RAGAS_RESPONSE_RELEVANCY=1`.
 
    > **Contexto que ve RAGas.** Se le pasan los chunks recuperados del RAG
    > (`contexto["rag"]`: políticas, normativa, BCRA, notas), no el contexto
@@ -182,3 +199,101 @@ evalúa un cliente que ya no es el que dice ser.
   el sampler no aplica el filtro de elegibilidad de entrenamiento (que excluye a
   los ya-defaulteados), porque esos son justamente los `MUY ALTO` que se quieren
   cubrir.
+
+## Varianza del harness
+
+El pass/fail agregado es un número chico sobre una base chica: 9 casos, veredicto
+binario por caso. Un solo caso que cambia de humor mueve el resultado 11 puntos.
+En julio se observó la secuencia **6/9 → 5/9 → 4/9 mientras las métricas
+continuas mejoraban** (juez 3,95 → 4,03; faithfulness 0,809 → 0,855), y —lo
+decisivo— *los casos que fallaban no eran los mismos en cada corrida*.
+
+Eso obliga a una pregunta previa a cualquier optimización: **¿cuánto se mueve el
+resultado sin cambiar nada?** Si el ruido entre corridas idénticas es del mismo
+orden que la mejora que se busca, el número no sirve para decidir y se termina
+persiguiendo el azar del muestreo del modelo.
+
+`evaluation/varianza.py` responde eso. Se corre el golden set N veces sin tocar
+nada (mismo código, mismo set, misma config) y el script reporta:
+
+- **Piso de ruido por métrica** — media, desvío, rango y coeficiente de variación.
+  El `cv` es lo que permite comparar el ruido del pass/fail (una tasa 0-1) con el
+  del juez (0-5), que viven en escalas distintas.
+- **Estabilidad por caso** — cuántas veces pasó cada uno. Un caso que pasa en
+  algunas corridas y falla en otras, *con el mismo código*, es ruido puro; separa
+  el ruido del techo real del modelo (los que fallan siempre).
+- **Checks que cambian de veredicto** — qué chequeo concreto se mueve. Es lo que
+  dice si el ruido está en el juez, en RAGas o en las aserciones deterministas.
+- **Umbral de decisión** — cuánto tiene que mejorar una métrica para ser creíble.
+  Con `n` corridas por configuración, el umbral aproximado es `2·sd·√(2/n)`. Una
+  mejora por debajo de eso no probó nada.
+
+```bash
+# correr el mismo set 3 veces
+for i in 1 2 3; do python evaluation/run_golden.py --etiqueta "var$i"; done
+
+# analizar la varianza
+python evaluation/varianza.py --etiqueta var
+```
+
+Tres corridas es el mínimo útil (con dos, el desvío no es interpretable), y aun
+con tres el desvío es una estimación gruesa: sirve para el orden de magnitud, no
+para el tercer decimal.
+
+### Resultado medido (29-ago-2026, gemma4:latest, 3 corridas idénticas)
+
+| Métrica | Corrida 1 | Corrida 2 | Corrida 3 | sd | **cv** |
+|---|---|---|---|---|---|
+| **Casos que pasan** | 3/9 (33%) | 5/9 (56%) | 4/9 (44%) | 0,112 | **25,1 %** |
+| **Checks que pasan** | 40/49 | 40/49 | 41/49 | 0,012 | **1,5 %** |
+| **Juez (0-5)** | 4,15 | 4,20 | 4,25 | 0,050 | **1,2 %** |
+| RAGas faithfulness | 0,832 | 0,826 | 0,774 | 0,032 | 3,9 % |
+
+**El pass/fail por caso es ~21× más ruidoso que el juez.** La comparación entre
+las corridas 1 y 2 lo muestra sin necesidad de estadística: pasaron **exactamente
+los mismos 40 checks de 49** en las dos, y sin embargo una dio 3/9 casos y la
+otra 5/9. El sistema rindió lo mismo; lo único que cambió fue **cómo se
+repartieron los 9 checks fallidos entre los casos**. Dos fallos que caen en un
+caso que ya fallaba no cuestan nada; los mismos dos fallos repartidos en dos
+casos distintos cuestan dos casos. Eso es azar de agrupamiento, no calidad.
+
+Traducido a umbrales de decisión (`2·sd·√(2/n)`, ~95 %):
+
+| Métrica | Umbral con 1 corrida | Umbral con 3 corridas |
+|---|---|---|
+| Casos que pasan | **0,315** (≈ 2,8 casos de 9) | 0,182 (≈ 1,6 casos) |
+| Checks que pasan | 0,034 | 0,020 |
+| Juez | 0,141 | 0,082 |
+| Faithfulness | 0,090 | 0,052 |
+
+**Consecuencia incómoda pero honesta:** las mejoras celebradas en julio
+(44 % → 67 % de casos, +0,223) **no superan el umbral de una sola corrida
+(0,315)**. Eso no dice que los arreglos fueran inútiles — el bug del resumen de
+pagos y el conteo de cartera eran defectos reales y verificados uno por uno, y
+las métricas continuas sí mejoraron. Dice que *el número de casos no fue lo que
+lo demostró*.
+
+Para que el pass/fail por caso detectara una mejora de un solo caso harían falta
+**~9 corridas por configuración** (unas 4,5 h). Con el juez alcanzan 2 o 3.
+
+### Cómo decidir, entonces
+
+1. **Métrica de decisión: el juez y los checks**, no el pass/fail por caso.
+   `checks_pass_rate` es casi tan estable como el juez (cv 1,5 %) y además es
+   interpretable: dice *cuántas aserciones* se cumplen, sin el efecto umbral.
+2. **El pass/fail queda como resumen de reporte**, no como criterio. El exit code
+   sigue sirviendo para CI (detecta que algo se rompió del todo), no para medir
+   progreso fino.
+3. **Un cambio se acepta si mueve el juez más de 0,14** (una corrida) **o más de
+   0,08** (promedio de tres). Por debajo de eso, no se probó nada.
+4. **Separar ruido de techo**: los casos que fallan *siempre* son señal (bug o
+   techo del modelo); los que alternan son ruido. Al 29-ago: `moderado_1`,
+   `moderado_2`, `alto_1` y `alto_2` fallan siempre — ahí hay algo real que
+   arreglar. `bajo_1` y `bajo_2` alternan: no vale la pena optimizarlos.
+5. El check que más alterna es **`sin_alucinaciones`** (5 de los 10 flips), lo
+   que era esperable: depende del juicio de un LLM sobre texto generado por otro.
+
+> **Cuidado con el desvío**: está estimado con 3 corridas, así que es una
+> aproximación gruesa (el intervalo de confianza de un sd con 2 grados de
+> libertad es ancho). Sirve para el orden de magnitud —"el pass/fail es un orden
+> más ruidoso que el juez"— no para el tercer decimal.

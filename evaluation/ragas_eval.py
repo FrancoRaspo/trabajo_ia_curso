@@ -4,7 +4,26 @@ Métricas RAGas sobre un informe generado.
 RAGas evalúa la calidad del pipeline RAG sin ground truth escrito a mano:
   - faithfulness      : ¿cada afirmación del informe se sostiene en el contexto
                         recuperado? (mide alucinación respecto del RAG)
-  - answer_relevancy  : ¿la respuesta responde al motivo de la consulta?
+
+`answer_relevancy` (ResponseRelevancy) está APAGADA por defecto. No mide lo que
+parece sobre un informe: su fórmula interna es
+
+    score = cosine_sim(motivo, preguntas_generadas).mean() * int(not all_noncommittal)
+
+y el segundo factor la colapsa a 0 EXACTO cuando el LLM juzga la respuesta
+"noncommittal". Medido el 29-ago-2026 sobre informes reales: el informe completo
+y la sección Recomendación sola dan noncommittal=[1,1,1] → 0,0; una respuesta
+corta y tajante con el mismo contenido da [0,0,0] → >0. Las preguntas que genera
+son correctas ("What is the recommendation regarding the credit application…"):
+el problema no es el matching sino el flag. La métrica está pensada para Q&A
+corto, y un informe multi-sección nunca tiene esa forma.
+
+Peor que un sesgo constante: el colapso es INTERMITENTE (2 de 8 casos por
+corrida, y casos distintos en cada una), así que inyecta ruido en vez de medir.
+Ningún caso del golden set gateaba por ella (todos los umbrales en null), así que
+apagarla no cambia ningún veredicto — sólo saca un número sin significado y
+ahorra 3 llamadas al LLM por caso. Se puede volver a encender con
+RAGAS_RESPONSE_RELEVANCY=1.
 
 El LLM y los embeddings evaluadores usan OpenAI (el juez del curso). Si `ragas`
 no está instalado o algo falla, devuelve {} y el runner marca las métricas RAGas
@@ -150,9 +169,14 @@ def evaluar_ragas(motivo: str, informe: str, rag_context) -> dict:
         # verifica cada una con el LLM; en informes largos (ej. un modelo fuerte)
         # el default (180s) se queda corto y devuelve NaN. RAGAS_TIMEOUT lo ajusta.
         timeout = int(os.environ.get("RAGAS_TIMEOUT", "600"))
+        # Ver el docstring del módulo: ResponseRelevancy se colapsa a 0 exacto
+        # de forma intermitente sobre documentos largos. Apagada por defecto.
+        metricas = [Faithfulness()]
+        if os.environ.get("RAGAS_RESPONSE_RELEVANCY", "0") == "1":
+            metricas.append(ResponseRelevancy())
         resultado = evaluate(
             dataset=ds,
-            metrics=[Faithfulness(), ResponseRelevancy()],
+            metrics=metricas,
             llm=llm,
             embeddings=emb,
             show_progress=False,
