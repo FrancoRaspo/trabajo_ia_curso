@@ -286,11 +286,21 @@ Para que el pass/fail por caso detectara una mejora de un solo caso harían falt
    progreso fino.
 3. **Un cambio se acepta si mueve el juez más de 0,14** (una corrida) **o más de
    0,08** (promedio de tres). Por debajo de eso, no se probó nada.
-4. **Separar ruido de techo**: los casos que fallan *siempre* son señal (bug o
-   techo del modelo); los que alternan son ruido. Al 29-ago: `moderado_1`,
-   `moderado_2`, `alto_1` y `alto_2` fallan siempre — ahí hay algo real que
-   arreglar. `bajo_1` y `bajo_2` alternan: no vale la pena optimizarlos.
-5. El check que más alterna es **`sin_alucinaciones`** (5 de los 10 flips), lo
+4. **Separar ruido de techo**: los casos que fallan *siempre* son señal; los que
+   alternan son ruido (`bajo_1`, `bajo_2` al 29-ago: no vale optimizarlos). Pero
+   "señal" no quiere decir "defecto del generador" — hay que abrir cada uno.
+   Corriendo opus sobre los cuatro que gemma4 falla siempre: `alto_1`,
+   `alto_2` y `moderado_2` los pasa (era techo del modelo local), `moderado_1`
+   falla por **golden set vencido** y `muy_alto_2` por un **bug de datos**
+   nuestro. Ninguno era un defecto del generador. Ver `docs/estado-y-produccion.md`
+   §4.4e.
+
+5. **Re-sembrar el set es parte del procedimiento, no un paso inicial.** El caso
+   `moderado_1` fue muestreado como MODERADO en julio y en agosto el modelo lo
+   puntúa MUY ALTO: el riesgo del cliente se movió y `banda_riesgo` falla sin que
+   nada esté roto. Vino fallando espuriamente en todas las corridas del 29-ago,
+   con los dos generadores. Antes de una medición que importe, re-sembrar.
+6. El check que más alterna es **`sin_alucinaciones`** (5 de los 10 flips), lo
    que era esperable: depende del juicio de un LLM sobre texto generado por otro.
 
 > **Cuidado con el desvío**: está estimado con 3 corridas, así que es una

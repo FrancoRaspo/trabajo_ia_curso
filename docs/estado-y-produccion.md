@@ -289,7 +289,36 @@ Se corrió el golden set **3 veces sin tocar nada** (gemma4:latest, mismo códig
 - El pass/fail queda como resumen y como exit code de CI, no como medida de progreso.
 - Para que el pass/fail detectara una mejora de un solo caso harían falta **~9 corridas** por configuración (~4,5 h).
 
-**Señal vs ruido, al 29-ago:** fallan *siempre* `moderado_1`, `moderado_2`, `alto_1`, `alto_2` → ahí hay algo real. Alternan `bajo_1` y `bajo_2` → no vale optimizarlos. El check que más alterna es `sin_alucinaciones` (5 de 10 flips), lo esperable en un juicio de LLM sobre texto de otro LLM.
+**Señal vs ruido, al 29-ago:** alternan `bajo_1` y `bajo_2` → no vale optimizarlos. El check que más alterna es `sin_alucinaciones` (5 de 10 flips), lo esperable en un juicio de LLM sobre texto de otro LLM. Sobre los que fallan siempre con gemma4, ver 4.4e: correr opus mostró que **ninguno era un defecto del sistema**.
+
+### 4.4e — Opus vs gemma4 (29-ago-2026, 2 corridas de opus vs 3 de gemma4)
+
+`python evaluation/varianza.py --comparar var1,var2,var3 opus1,opus2`
+
+| Métrica | gemma4 (n=3) | opus (n=2) | dif | umbral | veredicto |
+|---|---|---|---|---|---|
+| Casos que pasan | 0,444 | 0,667 | +0,223 | 0,373 | **no distinguible** |
+| Checks que pasan | 0,823 | 0,918 | +0,096 | 0,056 | **CREÍBLE** |
+| Juez | 4,200 | 4,762 | +0,562 | 0,148 | **CREÍBLE** |
+| Faithfulness | 0,811 | 0,950 | +0,139 | 0,083 | **CREÍBLE** |
+
+**Opus es netamente mejor, y las tres métricas continuas lo afirman con margen.** El detalle que vale la pena guardar: el pass/fail mejoró **+0,223 — la misma magnitud que la mejora celebrada en julio (44 %→67 %)— y sigue sin ser distinguible del ruido**. Mirando sólo ese número, hoy habríamos concluido "no hay diferencia clara" sobre un modelo claramente superior. Es la demostración más limpia de por qué 4.4d cambió el criterio.
+
+**Esto da vuelta la conclusión de julio** (gemma4 67 % vs opus 33 %; juez 4,23 vs 3,80). No cambió opus: cambió el pipeline. Varios errores que en julio se le imputaron al modelo —aritmética de fechas, conteo de cartera— eran **defectos del contexto que le dábamos** (4.4b/4.4c). Opus, que escribe más y arriesga más, los exponía; gemma4 los tapaba escribiendo menos. Corregido el contexto, el modelo fuerte gana en todo.
+
+**Los casos que gemma4 falla siempre, revisados uno por uno — ninguno era un defecto del generador:**
+
+| Caso | opus | gemma4 | Qué era realmente |
+|---|---|---|---|
+| `alto_1` | 2/2 | 0/3 | Techo del modelo local. Confirmado |
+| `moderado_2` | 1/2 | 0/3 | Techo del modelo local (el "caso terco") |
+| `alto_2` | 1/2 | 0/3 | Techo del modelo local |
+| `moderado_1` | 0/2 | 0/3 | **Golden set vencido**, no un defecto (ver abajo) |
+| `muy_alto_2` | 0/2 | 3/3 | **Bug de datos nuestro**, no de opus (ver abajo) |
+
+**`moderado_1`: el golden set está vencido.** El único check que falla es `banda_riesgo`: el modelo puntúa el cliente **MUY ALTO** y el set espera `["BAJO","MODERADO","ALTO"]` porque fue muestreado como MODERADO **en julio**. En seis semanas el riesgo real del cliente se movió. Es exactamente el modo de falla contra el que advierte `docs/evaluacion.md` ("con un cutoff viejo, el riesgo real del cliente cambia y `banda_riesgo` falla espuriamente"), y se pisó igual. **Ese caso viene fallando espuriamente en todas las corridas de hoy, con los dos generadores**, así que las cifras absolutas de 4.4d subestiman a ambos por igual (la comparación entre ellos no se ve afectada). **Acción: re-sembrar el golden set** con `muestrear_cuits.py` antes de la próxima medición, y tratar el re-sembrado como parte del procedimiento, no como algo que se hace una vez.
+
+**`muy_alto_2`: opus expone un bug de datos que gemma4 tapaba.** La alucinación CRÍTICA que marca el juez en las dos corridas es el conocido **`max_dias_atraso_historico`**: el informe publica 80 días (el campo por préstamo, que sólo mira cuotas *pagadas tarde*) mientras `dias_atraso_actual` y `pagos_resumen.max_dias_atraso_periodo` dicen **166**. El informe se contradice porque **los datos se contradicen**. Es el mismo bug de doble definición ya anotado en 4.4c, el mismo que se corrigió en su momento para `promedio_dias_atraso`. gemma4 pasa el caso simplemente porque no menciona el dato. **Acción: unificar la definición en `client_repository.get_historial_prestamos` con la de la feature ML.**
 
 Herramienta: `evaluation/varianza.py` (`python evaluation/varianza.py --etiqueta var`).
 
