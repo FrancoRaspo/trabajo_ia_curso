@@ -1,0 +1,223 @@
+{
+  "_descripcion": "Golden set de evaluación del generador de informes crediticios. Cada caso es un cliente real de la base + un motivo de decisión, con las aserciones que el informe generado DEBE cumplir (pass/fail). Los identificadores NO viajan acá (son datos personales y el repo es público): van en evaluation/golden_cuits.local.json, que no se versiona y que run_golden.py superpone al cargar. Re-sembrable con muestrear_cuits.py (bandas al corte del eval).",
+  "_esquema_caso": {
+    "id": "identificador único y legible del caso",
+    "cuit": "\"COMPLETAR\" en el archivo versionado; el CUIT real lo aporta golden_cuits.local.json, indexado por el id del caso",
+    "motivo": "texto de la solicitud/decisión que dispara el informe",
+    "notas": "por qué está en el set / qué se quiere cubrir (documentación, no se evalúa)",
+    "esperado": {
+      "encontrado": "bool — el cliente debe ser encontrado (true) o es un caso de 'no existe' (false)",
+      "banda_riesgo_en": "lista de bandas aceptables, ej. ['BAJO','MODERADO']; null = no se chequea",
+      "score_min": "int o null — score mínimo aceptable",
+      "score_max": "int o null — score máximo aceptable",
+      "debe_contener": "lista de substrings que DEBEN aparecer literalmente en el informe",
+      "no_debe_contener": "lista de substrings que NO deben aparecer",
+      "juez_puntaje_min": "int 1-5 — puntaje mínimo promedio exigido al juez LLM",
+      "sin_alucinaciones": "bool — el juez no debe reportar alucinaciones",
+      "cumplimiento_reglas": "bool — el juez debe marcar cumplimiento_reglas.aprobado = true",
+      "ragas_faithfulness_min": "float 0-1 o null — fidelidad mínima al contexto recuperado (RAGas)",
+      "ragas_answer_relevancy_min": "float 0-1 o null — relevancia mínima de la respuesta al motivo (RAGas)"
+    }
+  },
+  "casos": [
+    {
+      "id": "inexistente_1",
+      "cuit": "99999999999",
+      "motivo": "Solicita préstamo personal por $2.000.000.",
+      "notas": "Caso negativo: CUIT que no existe en la base. Debe marcar 'no encontrado' y NO inventar datos ni score.",
+      "esperado": {
+        "encontrado": false,
+        "banda_riesgo_en": null,
+        "score_min": null,
+        "score_max": null,
+        "debe_contener": [],
+        "no_debe_contener": [],
+        "juez_puntaje_min": null,
+        "sin_alucinaciones": true,
+        "cumplimiento_reglas": null,
+        "ragas_faithfulness_min": null,
+        "ragas_answer_relevancy_min": null
+      }
+    },
+    {
+      "id": "bajo_1",
+      "cuit": "COMPLETAR",
+      "motivo": "Solicita préstamo prendario por $15.000.000 a 48 meses.",
+      "notas": "Muestreado automáticamente; banda del modelo al muestrear: BAJO.",
+      "esperado": {
+        "encontrado": true,
+        "banda_riesgo_en": [
+          "BAJO",
+          "MODERADO"
+        ],
+        "score_min": null,
+        "score_max": null,
+        "debe_contener": [],
+        "no_debe_contener": [],
+        "juez_puntaje_min": 4,
+        "sin_alucinaciones": true,
+        "cumplimiento_reglas": true,
+        "ragas_faithfulness_min": 0.7,
+        "ragas_answer_relevancy_min": null
+      }
+    },
+    {
+      "id": "bajo_2",
+      "cuit": "COMPLETAR",
+      "motivo": "Solicita préstamo prendario por $15.000.000 a 48 meses.",
+      "notas": "Muestreado automáticamente; banda del modelo al muestrear: BAJO.",
+      "esperado": {
+        "encontrado": true,
+        "banda_riesgo_en": [
+          "BAJO",
+          "MODERADO"
+        ],
+        "score_min": null,
+        "score_max": null,
+        "debe_contener": [],
+        "no_debe_contener": [],
+        "juez_puntaje_min": 4,
+        "sin_alucinaciones": true,
+        "cumplimiento_reglas": true,
+        "ragas_faithfulness_min": 0.7,
+        "ragas_answer_relevancy_min": null
+      }
+    },
+    {
+      "id": "moderado_1",
+      "cuit": "COMPLETAR",
+      "motivo": "Solicita préstamo personal por $6.000.000 a 36 meses.",
+      "notas": "Muestreado automáticamente; banda del modelo al muestrear: MODERADO.",
+      "esperado": {
+        "encontrado": true,
+        "banda_riesgo_en": [
+          "BAJO",
+          "MODERADO",
+          "ALTO"
+        ],
+        "score_min": null,
+        "score_max": null,
+        "debe_contener": [],
+        "no_debe_contener": [],
+        "juez_puntaje_min": 4,
+        "sin_alucinaciones": true,
+        "cumplimiento_reglas": true,
+        "ragas_faithfulness_min": 0.7,
+        "ragas_answer_relevancy_min": null
+      }
+    },
+    {
+      "id": "moderado_2",
+      "cuit": "COMPLETAR",
+      "motivo": "Solicita préstamo personal por $6.000.000 a 36 meses.",
+      "notas": "Muestreado automáticamente; banda del modelo al muestrear: MODERADO.",
+      "esperado": {
+        "encontrado": true,
+        "banda_riesgo_en": [
+          "BAJO",
+          "MODERADO",
+          "ALTO"
+        ],
+        "score_min": null,
+        "score_max": null,
+        "debe_contener": [],
+        "no_debe_contener": [],
+        "juez_puntaje_min": 4,
+        "sin_alucinaciones": true,
+        "cumplimiento_reglas": true,
+        "ragas_faithfulness_min": 0.7,
+        "ragas_answer_relevancy_min": null
+      }
+    },
+    {
+      "id": "alto_1",
+      "cuit": "COMPLETAR",
+      "motivo": "Solicita renovación de acuerdo en cuenta corriente por $8.000.000.",
+      "notas": "Muestreado automáticamente; banda del modelo al muestrear: ALTO.",
+      "esperado": {
+        "encontrado": true,
+        "banda_riesgo_en": [
+          "MODERADO",
+          "ALTO",
+          "MUY ALTO"
+        ],
+        "score_min": null,
+        "score_max": null,
+        "debe_contener": [],
+        "no_debe_contener": [],
+        "juez_puntaje_min": 4,
+        "sin_alucinaciones": true,
+        "cumplimiento_reglas": true,
+        "ragas_faithfulness_min": 0.7,
+        "ragas_answer_relevancy_min": null
+      }
+    },
+    {
+      "id": "alto_2",
+      "cuit": "COMPLETAR",
+      "motivo": "Solicita renovación de acuerdo en cuenta corriente por $8.000.000.",
+      "notas": "Muestreado automáticamente; banda del modelo al muestrear: ALTO.",
+      "esperado": {
+        "encontrado": true,
+        "banda_riesgo_en": [
+          "MODERADO",
+          "ALTO",
+          "MUY ALTO"
+        ],
+        "score_min": null,
+        "score_max": null,
+        "debe_contener": [],
+        "no_debe_contener": [],
+        "juez_puntaje_min": 4,
+        "sin_alucinaciones": true,
+        "cumplimiento_reglas": true,
+        "ragas_faithfulness_min": 0.7,
+        "ragas_answer_relevancy_min": null
+      }
+    },
+    {
+      "id": "muy_alto_1",
+      "cuit": "COMPLETAR",
+      "motivo": "Solicita ampliación de línea de crédito por $10.000.000.",
+      "notas": "Muestreado automáticamente; banda del modelo al muestrear: MUY ALTO.",
+      "esperado": {
+        "encontrado": true,
+        "banda_riesgo_en": [
+          "ALTO",
+          "MUY ALTO"
+        ],
+        "score_min": null,
+        "score_max": null,
+        "debe_contener": [],
+        "no_debe_contener": [],
+        "juez_puntaje_min": 4,
+        "sin_alucinaciones": true,
+        "cumplimiento_reglas": true,
+        "ragas_faithfulness_min": 0.7,
+        "ragas_answer_relevancy_min": null
+      }
+    },
+    {
+      "id": "muy_alto_2",
+      "cuit": "COMPLETAR",
+      "motivo": "Solicita ampliación de línea de crédito por $10.000.000.",
+      "notas": "Muestreado automáticamente; banda del modelo al muestrear: MUY ALTO.",
+      "esperado": {
+        "encontrado": true,
+        "banda_riesgo_en": [
+          "ALTO",
+          "MUY ALTO"
+        ],
+        "score_min": null,
+        "score_max": null,
+        "debe_contener": [],
+        "no_debe_contener": [],
+        "juez_puntaje_min": 4,
+        "sin_alucinaciones": true,
+        "cumplimiento_reglas": true,
+        "ragas_faithfulness_min": 0.7,
+        "ragas_answer_relevancy_min": null
+      }
+    }
+  ]
+}

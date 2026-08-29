@@ -1,7 +1,7 @@
 """Refresca la caché BCRA para una lista de CUITs (job batch / mensual).
 
 Uso:
-    python -m scripts.sync_bcra 20123456789 27299772417
+    python -m scripts.sync_bcra 20123456789 27123456784
     python -m scripts.sync_bcra --file cuits.txt          # un CUIT por línea
     python -m scripts.sync_bcra --file cuits.txt --forzar  # ignora el TTL
 

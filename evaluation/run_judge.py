@@ -28,7 +28,7 @@ def main():
         sys.exit(1)
     cuit_raw, motivo = sys.argv[1], sys.argv[2]
 
-    # Normalizar el CUIT a SOLO dígitos: "23-25079318-9" -> "23250793189".
+    # Normalizar el CUIT a SOLO dígitos: "20-12345678-9" -> "20123456789".
     # Los guiones rompen las consultas SQL.
     cuit = re.sub(r"\D", "", cuit_raw)
     if not cuit:
@@ -69,7 +69,10 @@ def main():
     if aluc:
         print("\n⚠ Alucinaciones detectadas:")
         for a in aluc:
-            print("   -", a)
+            if isinstance(a, dict):
+                print(f"   - [{a.get('severidad','?')}] {a.get('descripcion','')}")
+            else:
+                print("   -", a)
 
     print("\nJSON completo del veredicto:")
     print(json.dumps(veredicto, ensure_ascii=False, indent=2))

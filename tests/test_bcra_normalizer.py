@@ -6,7 +6,7 @@ CRUDO_CON_DEUDA = {
     "deudas": {
         "status": 200,
         "results": {
-            "identificacion": 27299772417,
+            "identificacion": 20123456789,
             "denominacion": "PEREZ JUAN",
             "periodos": [
                 {
@@ -75,12 +75,12 @@ def test_resumir_vacio():
 
 
 def test_a_texto_vacio_es_explicito():
-    texto = norm.a_texto(norm.resumir(CRUDO_VACIO), "27299772417")
+    texto = norm.a_texto(norm.resumir(CRUDO_VACIO), "20123456789")
     assert "sin registros" in texto.lower()
 
 
 def test_a_texto_con_deuda_menciona_peor_situacion():
-    texto = norm.a_texto(norm.resumir(CRUDO_CON_DEUDA), "27299772417")
+    texto = norm.a_texto(norm.resumir(CRUDO_CON_DEUDA), "20123456789")
     assert "BANCO B" in texto
     assert "proceso judicial" in texto.lower()
     assert "impago" in texto.lower()

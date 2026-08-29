@@ -1,0 +1,14 @@
+Evaluación
+
+Presentación : 8
+Dificultad: 8.5
+Comentario Eric Risco (Coordinador)
+“Muchas gracias por tu trabajo, Franco. Has construido un sistema real y completo, no un ejercicio: consulta en lenguaje natural, datos
+financieros de la base, un modelo de scoring con explicabilidad SHAP por cliente, RAG con pgvector, consulta a la Central de Deudores del
+BCRA y un informe redactado por secciones, todo con app web. Me gustó especialmente cómo repartes el trabajo entre el modelo estadístico y el
+LLM (el dato lo pone el scoring, el lenguaje solo lo narra) y las salvaguardas anti-alucinación en capas: pre-formateas los importes antes de
+pasarlos al modelo, conservas el dato crudo como fuente de verdad y añades un validador más un juez LLM.Para mejorar, dos cosas de rigor. En
+el modelo de scoring vigila la posible fuga de datos: el target lo defines por atraso y clasificación, y quedan features correlacionadas con eso, así
+que el AUC puede estar inflado; reporta el tamaño del dataset y usa un split temporal. Y la evaluación conviene automatizarla: ahora audita un
+CUIT por vez, sin golden set ni métricas agregadas; monta un conjunto de casos con pass/fail y añade RAGas, que está en el temario. Es de los
+proyectos más sólidos del grupo”.

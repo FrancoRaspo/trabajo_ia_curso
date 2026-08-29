@@ -8,3 +8,4 @@ evaluation/reports/
 
 scratchpad_run_*.log
 scratchpad/
+evaluation/*.local.json
