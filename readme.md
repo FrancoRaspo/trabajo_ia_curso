@@ -5,6 +5,9 @@ Sistema que transforma una consulta en lenguaje natural sobre un asociado en un
 auditable, para asistir la toma de decisiones de crédito en una entidad
 financiera (mutual / cooperativa de crédito).
 
+> 📚 **Documentación técnica** (arquitectura, flujo de generación, modo
+> administrador y modelo de datos, con diagramas): [`docs/`](docs/README.md).
+
 ---
 
 ## 1. El problema a resolver
@@ -64,7 +67,7 @@ flowchart TD
 4. **Redacción — LLM.** Un modelo de lenguaje redacta el informe ejecutivo a
    partir de *todo* lo anterior.
 
-**Tres decisiones de diseño que diferencian al producto:**
+**Cuatro decisiones de diseño que diferencian al producto:**
 
 - **Anti-alucinación.** El LLM solo puede usar los datos provistos: tiene
   prohibido inventar o estimar números, y el informe se valida automáticamente
@@ -78,6 +81,11 @@ flowchart TD
 - **Privacidad / on-premise.** Puede correr 100% local (LLM con Ollama +
   embeddings locales), de modo que los datos sensibles de los asociados **no
   salen de la institución**.
+- **Prompts gobernables por el experto de dominio.** El informe se genera **por
+  secciones**, con cada prompt en un archivo `.txt` editable. Un **modo
+  administrador** deja revisar y mejorar el prompt de cada sección junto a los
+  datos que la alimentan, y **regenerar solo esa sección** al guardar — sin tocar
+  código ni reiniciar. Ver [`docs/modo-admin.md`](docs/modo-admin.md).
 
 ---
 
@@ -97,7 +105,8 @@ Sí. El sistema funciona de punta a punta y genera informes crediticios reales.
 - **Auditable:** cada informe queda registrado con su trazabilidad (modelos
   usados, fuentes, validación).
 - **Con tests:** suite determinista (scoring, explicabilidad, validador,
-  limpieza de datos) más la evaluación generativa con el juez.
+  limpieza de datos) más la **evaluación automatizada** sobre un golden set
+  (pass/fail agregado con juez LLM y RAGas — ver [docs/evaluacion.md](docs/evaluacion.md)).
 
 ---
 
@@ -105,10 +114,14 @@ Sí. El sistema funciona de punta a punta y genera informes crediticios reales.
 
 El sistema es funcional, y el trabajo a futuro apunta a robustez y rigor:
 
-* Rigor del modelo en producción (Calibración de probabilidades y monitoreo de cambios temporales)
-* Mejor contexto y evaluación objetiva
-* Golden test programado y periodico
-* Operación real con control humano
+* **Rigor del modelo:** entrenamiento con **split temporal** y control de fuga de
+  datos, calibración de probabilidades y bandas de riesgo — ver
+  [docs/scoring.md](docs/scoring.md). *(Hecho)*
+* **Evaluación objetiva:** **golden set** con pass/fail agregado, juez LLM y
+  RAGas — ver [docs/evaluacion.md](docs/evaluacion.md). *(Hecho)*
+* Correr el golden set de forma programada/periódica (CI) y monitoreo de deriva
+  temporal del modelo en producción.
+* Operación real con control humano.
 ---
 
 ## Stack técnico
@@ -130,30 +143,54 @@ El sistema es funcional, y el trabajo a futuro apunta a robustez y rigor:
 
 ```
 trabajo_ia/
-├── .env                       # Variables de entorno
+├── .env                       # Variables de entorno (incl. ADMIN_PASSWORD)
 ├── requirements.txt           # Dependencias
-├── app.py                     # App web (formulario + informe en streaming)
-├── pipeline.py                # Orquestador del flujo completo
+├── app.py                     # App web: formulario, informe en streaming (SSE) y endpoints del modo admin
+├── pipeline.py                # Orquestador del flujo + sesiones en memoria (regenerar secciones)
+├── pdf_export.py              # Render del informe a PDF (Markdown → HTML → PDF)
 ├── sql/init_db.py             # Inicialización de la base (pgvector + tablas)
-├── db/                        # Conexiones y repositorio (SQL Server / Postgres)
+├── db/                        # Conexiones y ClientRepository (SQL Server / Postgres)
+│   ├── sqlserver_connection.py
+│   ├── postgres_connection.py
+│   └── client_repository.py
 ├── ml/
 │   ├── scoring_model.py       # Modelo XGBoost (score, nivel, drivers)
 │   └── shap_explainer.py      # Explicabilidad por cliente (SHAP)
-├── models                     
-│   ├── scoring_model.json     # Resultados del entramiento del modelo
+├── models/
+│   └── scoring_model.json     # Modelo de scoring entrenado (artefacto)
 ├── rag/
 │   ├── pgvector_indexer.py    # Indexación + embeddings + políticas
 │   └── pgvector_retriever.py  # Recuperación de contexto cualitativo
+├── external/                  # Integración BCRA (Central de Deudores) con caché
+│   ├── bcra_client.py
+│   ├── bcra_cache.py
+│   └── bcra_normalizer.py
 ├── llm/
-│   ├── generator.py           # Selección del modelo (local / cloud)
-│   ├── prompts.py             # Prompt del informe (reglas anti-alucinación)
-│   └── prompt_builder.py      # Armado del prompt con los datos
+│   ├── generator.py           # Selección del modelo (local Ollama / Anthropic / OpenAI / Gemini)
+│   └── report_sections.py     # Generación del informe POR SECCIONES (orquestación + regen)
+├── prompts/                   # Textos de TODOS los prompts en .txt (editables sin tocar código)
+│   ├── __init__.py            # load() + catálogo + guardar() con validación
+│   ├── seccion_*.txt          # Instrucción de cada sección del informe
+│   ├── secciones_base.txt     # Reglas comunes (anti-alucinación) + seccion_human.txt
+│   ├── recomendacion.txt · resumen.txt
+│   ├── sin_datos_*.txt        # Camino "sin datos internos"
+│   ├── extractor_*.txt        # Extracción de la consulta en lenguaje natural
+│   └── juez_*.txt             # Juez LLM
 ├── evaluation/
 │   ├── llm_judge.py           # Juez LLM (auditoría de informes)
-│   └── run_judge.py           # Generar un informe y auditarlo
+│   ├── run_judge.py           # Generar un informe y auditarlo (un CUIT)
+│   ├── golden_set.json        # Golden set: casos + aserciones pass/fail
+│   ├── muestrear_cuits.py     # Siembra el golden set con CUITs reales por banda
+│   ├── metricas.py            # Aserciones deterministas + umbrales de juez/RAGas
+│   ├── ragas_eval.py          # Métricas RAGas (faithfulness, answer_relevancy)
+│   ├── run_golden.py          # Evaluación agregada sobre el golden set (CI)
+│   ├── comparar_reportes.py   # Comparativa de generadores lado a lado
 │   └── test_impletation.py    # Tests deterministas de la implementación
 ├── scripts/
-│   └── entrenar_modelo_real.py # Entrenar el modelo de scoring con datos reales
+│   ├── entrenar_modelo_temporal.py # Entrenar el scoring con split temporal (anti-fuga)
+│   ├── entrenar_modelo_real.py # (previo) Entrenar el modelo de scoring
+│   └── sync_bcra.py            # Sincronización/caché del BCRA
+├── docs/                      # Documentación técnica (arquitectura, flujos, modelo de datos)
 └── politicas/                 # Políticas de la entidad (se reindexan al iniciar)
 ```
 
@@ -169,6 +206,8 @@ pip install -r requirements.txt
 
 # 2. Configurar credenciales y modelos en .env
 #    (SQL Server, PostgreSQL, PROVEEDOR_LLM, EMBED_MODEL, etc.)
+#    Para habilitar el modo administrador, definir ADMIN_PASSWORD
+#    (si queda vacío, el modo admin se deshabilita).
 
 # 3. LLM local
 ollama pull qwen3:14b
@@ -176,17 +215,26 @@ ollama pull qwen3:14b
 # 4. Inicializar la base (pgvector + tablas)
 python -m sql.init_db
 
-# 5. Entrenar el modelo de scoring (una vez)
-python scripts/entrenar_modelo_real.py
+# 5. Entrenar el modelo de scoring (una vez, con split temporal anti-fuga)
+python scripts/entrenar_modelo_temporal.py
 
 # 6. Levantar la app
 uvicorn app:app --host 127.0.0.1 --port 8000
 ```
 
-Para auditar un informe con el juez LLM:
+Para auditar **un** informe con el juez LLM:
 
 ```bash
 python evaluation/run_judge.py 23-25079318-9 "Solicita crédito personal por 2 millones"
+```
+
+Para la **evaluación automatizada** sobre el golden set (pass/fail agregado, juez
+LLM + RAGas — ver [docs/evaluacion.md](docs/evaluacion.md)):
+
+```bash
+pip install ragas datasets
+python evaluation/muestrear_cuits.py --salida casos.json   # (una vez) sembrar CUITs reales por banda
+python evaluation/run_golden.py          # correr todos los casos y agregar métricas
 ```
 
 ---
