@@ -227,14 +227,20 @@ def historial_markdown(ctx: dict) -> str:
         lineas += [_linea_prestamo(p) for p in sorted(resto, key=orden, reverse=True)]
         lineas.append("")
 
-    # OJO: acá NO se publica un "atraso máximo histórico de la cartera" agregando
-    # los `max_dias_atraso_historico` de cada préstamo. Se probó y el juez lo marcó
-    # como alucinación con razón: ese campo (client_repository.py) sólo mira cuotas
-    # PAGADAS TARDE e ignora las impagas vigentes, así que da un número distinto del
-    # que ve el modelo ML en su feature del mismo nombre. Dos fuentes para el mismo
-    # concepto = el informe se contradice solo (el mismo bug que ya se corrigió en
-    # el promedio de atraso). El único máximo que se informa es el de `pagos_resumen`,
-    # que sí comparte definición con la feature ML.
+    # Acá NO se publica un "atraso máximo histórico de la cartera" agregando los
+    # `max_dias_atraso_historico` de cada préstamo. El motivo original era un BUG,
+    # ya corregido (29-ago-2026): ese campo sólo miraba cuotas PAGADAS TARDE e
+    # ignoraba las impagas vigentes, así que daba un número distinto del de la
+    # feature ML homónima y el informe se contradecía solo. Hoy las dos
+    # definiciones coinciden (ver el comentario en la query de
+    # `client_repository.get_historial_prestamos` y `tests/test_definicion_atraso.py`),
+    # así que el impedimento técnico ya no existe.
+    #
+    # Se mantiene fuera por una decisión de contenido, no de datos: `pagos_resumen`
+    # ya informa un máximo, y publicar dos máximos con alcances distintos (toda la
+    # historia vs. el período del resumen) invita a la confusión que se acaba de
+    # eliminar. Si se decide agregarlo, hay que decir explícitamente el alcance de
+    # cada uno.
     lineas += _bloque_pagos(pagos)
     lineas.append("")
     lineas += _bloque_gestiones(gestiones)

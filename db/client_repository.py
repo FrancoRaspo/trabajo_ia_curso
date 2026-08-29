@@ -111,10 +111,7 @@ class ClientRepository:
                   ,cuotas_pagas.cantidad     cuotas_pagadas
                   ,nro_de_cuotas - cuotas_pagas.cantidad cuotas_pendientes
                   ,ISNULL(DATEDIFF(DAY ,cuotas_vencida.vencimiento ,GETDATE()) ,0) dias_atraso_actual
-                  ,ISNULL(
-                       max_atraso.dias
-                      ,ISNULL(DATEDIFF(DAY ,cuotas_vencida.vencimiento ,GETDATE()) ,0)
-                   )                         max_dias_atraso_historico
+                  ,ISNULL(max_atraso.dias ,0) max_dias_atraso_historico
                   ,estado.descripcion        estado -- VIGENTE / CANCELADO / IRRECUPERABLE / REFINANCIADO
                   ,ISNULL(garantias.conceptos ,'Sin garantías o garantía personal') tipo_garantia
                   ,ppu.nom_ape               oficial_credito
@@ -166,18 +163,42 @@ class ClientRepository:
                 ORDER BY
                        pc.vencimiento asc
             ) cuotas_vencida
+            -- Máximo atraso histórico de la operación. MISMA definición que la
+            -- feature ML `max_dias_atraso_historico` (ml/feature_query.py): por
+            -- cada cuota YA VENCIDA, los días entre su vencimiento y la fecha de
+            -- pago si se pagó, o HOY si sigue impaga.
+            --
+            -- Antes filtraba `fecha_canc IS NOT NULL`, o sea SÓLO cuotas pagadas
+            -- tarde, e ignoraba las impagas vigentes — justo las de mayor atraso,
+            -- que además crece todos los días. Un cliente con 166 días de mora
+            -- viva y un atraso viejo de 80 ya saldado publicaba "máximo histórico
+            -- 80": un máximo MENOR que su atraso actual. Esa contradicción la
+            -- detectó el juez del golden set como alucinación CRÍTICA en el caso
+            -- muy_alto_2. Es el mismo bug que ya se corrigió en
+            -- `promedio_dias_atraso`.
+            --
+            -- Con esta definición vale siempre max_dias_atraso_historico >=
+            -- dias_atraso_actual, porque la cuota impaga más vieja entra en el MAX.
             outer APPLY (
-                SELECT top 1 DATEDIFF(DAY ,pc.vencimiento ,pc.fecha_canc) dias
-                FROM   PRES_CUOTAS PC
-                WHERE  PC.sucursal = mo.sucursal
-                       AND PC.operatoria = mo.operatoria
-                       AND PC.linea = mo.linea
-                       AND PC.nro_servicio = mo.nro_servicio
-                       AND pc.fecha_canc is NOT null
-                       AND pc.vencimiento < GETDATE()
-                       AND DATEDIFF(DAY ,pc.vencimiento ,pc.fecha_canc) > 0
-                ORDER BY
-                       DATEDIFF(DAY ,pc.vencimiento ,pc.fecha_canc) desc
+                SELECT MAX(CASE WHEN d.dias > 0 THEN d.dias ELSE 0 END) dias
+                FROM   (
+                           SELECT DATEDIFF(
+                                      DAY
+                                     ,pc.vencimiento
+                                     ,CASE
+                                          WHEN pc.fecha_canc IS NOT NULL
+                                               AND pc.fecha_canc <= GETDATE()
+                                          THEN pc.fecha_canc
+                                          ELSE GETDATE()
+                                      END
+                                  ) dias
+                           FROM   PRES_CUOTAS PC
+                           WHERE  PC.sucursal = mo.sucursal
+                                  AND PC.operatoria = mo.operatoria
+                                  AND PC.linea = mo.linea
+                                  AND PC.nro_servicio = mo.nro_servicio
+                                  AND pc.vencimiento <= GETDATE()
+                       ) d
             ) max_atraso
             outer APPLY (
                 SELECT COUNT(1)                  cantidad
