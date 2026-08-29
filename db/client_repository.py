@@ -1,5 +1,43 @@
 from sqlalchemy import text
 from datetime import datetime, date, timedelta
+
+# Tablas base de SQL Server que este módulo y ml/feature_query realmente leen.
+#
+# Va acá, junto a las queries, porque es acá donde puede quedar desactualizada.
+# El informe la publica en su campo de trazabilidad: si miente, el log auditable
+# miente. tests/test_trazabilidad.py extrae las tablas del SQL fuente y falla si
+# esta lista se desincroniza en cualquiera de las dos direcciones.
+TABLAS_SQLSERVER = [
+    "ACTIVIDAD",
+    "ACTIVIDAD_RUBRO",
+    "ACTIVIDAD_SUBRUB",
+    "CLASIFICACION_CLIENTE",
+    "CTACTE_MAESAL",
+    "CUOMUTUAL_MAE",
+    "DOCUMENTO_TIPO",
+    "ESTADO",
+    "GARANTIAS_MAE",
+    "GARANTIAS_REL",
+    "GARANTIAS_SUBTIPO",
+    "GARANTIAS_TIPO",
+    "LIN_CTAVISTA",
+    "LIN_PRESTAMO",
+    "LINEAS",
+    "MAESTROS_OPER",
+    "MAESTROS_REL_MAESTROS",
+    "MONEDA",
+    "PERFILES_CLIENTES",
+    "PERSONA_REL",
+    "PERSONA_TIPO",
+    "PERSONAS",
+    "PRES_CUOTAS",
+    "PRES_MAESTRO",
+    "SITUACION_OPER",
+    "SITUACION_TIPO_TRAMITES",
+    "SITUACION_TRAMITE_PASOS",
+]
+
+
 def _num(x):
     """Decimal/None de SQL -> float seguro para las features."""
     return float(x) if x is not None else 0.0
@@ -196,15 +234,44 @@ class ClientRepository:
     def get_resumen_comportamiento_pagos(self, cliente_id: str,
                                           meses: int = 24) -> dict:
         """
-        Resumen estadístico del comportamiento de pagos.
-        Período configurable (default: 24 meses).
+        Resumen del comportamiento de pagos sobre las cuotas VENCIDAS en el
+        período (default: 24 meses).
+
+        La definición de `dias_atraso` es deliberadamente la MISMA que la de
+        ml/feature_query.py (CTE cuotas_mora): días entre el vencimiento y la
+        cancelación —o hoy, si sigue impaga—, con piso en 0. Así el promedio que
+        narra el informe y el `dias_atraso_promedio` que ve el modelo son EL
+        MISMO NÚMERO. Si divergen, el informe se contradice solo.
+
+        La versión anterior filtraba `AND pc.vencimiento < pc.fecha_canc`, lo que
+        rompía el resumen de tres formas a la vez:
+
+          - dejaba sólo las cuotas PAGADAS TARDE, así que `dias_atraso = 0` era
+            imposible: `cuotas_puntuales` daba 0 para TODOS los clientes, siempre;
+          - `fecha_canc IS NULL` hace que esa comparación sea NULL -> falsa, así
+            que las cuotas vencidas e IMPAGAS (las peores) quedaban excluidas del
+            resumen de mora;
+          - el promedio resultante era una media condicionada a las cuotas
+            atrasadas, sistemáticamente mayor que `dias_atraso_promedio` del
+            modelo (ej. 60,75 vs 54,0). El informe recibía dos números distintos
+            con nombres casi iguales y los mezclaba entre secciones: era la causa
+            principal de las "alucinaciones" que marcaba el juez.
+
+        El propio SELECT usaba ISNULL(fecha_canc, GETDATE()), lo que prueba que
+        la intención era incluir las impagas: el WHERE contradecía al SELECT.
         """
         resultado = self.session.execute(text("""
+            -- Los conteos van con ISNULL: sin filas, SUM() devuelve NULL y el
+            -- informe lo narra como "no disponible" cuando la verdad es "no
+            -- venció ninguna cuota en el período". Cero es un dato real.
+            -- El promedio y el máximo SÍ quedan en NULL: sobre cero cuotas no
+            -- existen, y un 0 ahí sí mentiría.
             SELECT COUNT(*)                         AS total_cuotas
-                  ,SUM(CASE WHEN dias_atraso = 0 THEN 1 ELSE 0 END) AS cuotas_puntuales
-                  ,SUM(CASE WHEN dias_atraso BETWEEN 1 AND 30 THEN 1 ELSE 0 END) AS atraso_leve_1_30d
-                  ,SUM(CASE WHEN dias_atraso BETWEEN 31 AND 90 THEN 1 ELSE 0 END) AS atraso_moderado_31_90d
-                  ,SUM(CASE WHEN dias_atraso > 90 THEN 1 ELSE 0 END) AS atraso_grave_mas90d
+                  ,ISNULL(SUM(CASE WHEN dias_atraso = 0 THEN 1 ELSE 0 END), 0) AS cuotas_puntuales
+                  ,ISNULL(SUM(CASE WHEN dias_atraso BETWEEN 1 AND 30 THEN 1 ELSE 0 END), 0) AS atraso_leve_1_30d
+                  ,ISNULL(SUM(CASE WHEN dias_atraso BETWEEN 31 AND 90 THEN 1 ELSE 0 END), 0) AS atraso_moderado_31_90d
+                  ,ISNULL(SUM(CASE WHEN dias_atraso > 90 THEN 1 ELSE 0 END), 0) AS atraso_grave_mas90d
+                  ,ISNULL(SUM(CASE WHEN impaga = 1 THEN 1 ELSE 0 END), 0)      AS cuotas_impagas_vencidas
                   ,AVG(CAST(dias_atraso AS FLOAT))  AS promedio_dias_atraso
                   ,MAX(dias_atraso)                 AS max_dias_atraso_periodo
         FROM   PRES_CUOTAS PC
@@ -220,12 +287,16 @@ class ClientRepository:
                     ON  p.tdi_cod = pr.tdi_cod
                     AND p.nro_doc = pr.nro_doc
                outer APPLY (
-            SELECT DATEDIFF(DAY ,pc.vencimiento ,ISNULL(pc.fecha_canc ,GETDATE())) dias_atraso
+            SELECT CASE WHEN DATEDIFF(DAY, pc.vencimiento,
+                                      ISNULL(pc.fecha_canc, GETDATE())) > 0
+                        THEN DATEDIFF(DAY, pc.vencimiento,
+                                      ISNULL(pc.fecha_canc, GETDATE()))
+                        ELSE 0 END                          AS dias_atraso
+                  ,CASE WHEN pc.fecha_canc IS NULL THEN 1 ELSE 0 END AS impaga
         )                                          cuotas
         WHERE  p.id_insc = :cliente_id
               AND pc.vencimiento >= DATEADD(MONTH, :meses_neg, GETDATE())
               AND pc.vencimiento < GETDATE()
-              AND pc.vencimiento < pc.fecha_canc
         """), {"cliente_id": cliente_id, "meses_neg": -meses}).mappings().fetchone()
         return dict(resultado) if resultado else {}
 
@@ -314,65 +385,32 @@ class ClientRepository:
         """), {"cliente_id": cliente_id}).mappings().fetchall()
         return [dict(r) for r in rows]
 
-    def construir_features_ml(self, cliente_id: str) -> dict:
+    def construir_features_ml(self, cliente_id: str, cutoff: str | None = None) -> dict:
         """
-        Consolida todas las queries anteriores y construye el dict de features
-        para el modelo XGBoost.
+        Vector de features para el modelo de scoring, a fecha `cutoff`
+        (por defecto, hoy).
+
+        Delega en ml.feature_query, que es la MISMA query que usa el
+        entrenamiento. Antes esta función reimplementaba las features a mano y
+        divergía del entrenamiento en silencio:
+
+          - ratio_deuda_ingresos dividía por el ingreso, no por la capacidad de
+            pago (30% del ingreso): un factor 3,33x de diferencia.
+          - productos_activos contaba cuentas; el entrenamiento contaba préstamos.
+          - saldo_promedio_ahorro_6m filtraba tipo_cuenta == 'CAJA_AHORRO', un
+            literal que no existe en lineas.concepto -> daba 0 para TODOS los
+            clientes, siempre, mientras el entrenamiento veía el valor real.
+
+        No reintroducir cálculos de features acá. Si falta una, va en la query.
         """
-        basicos   = self.get_datos_basicos(cliente_id)
-        prestamos = self.get_historial_prestamos(cliente_id)
-        pagos     = self.get_resumen_comportamiento_pagos(cliente_id)
-        saldos    = self.get_saldos_promedio_cuentas(cliente_id)
+        from ml.feature_query import (FEATURE_COLUMNS, cargar_features,
+                                      features_sin_historial)
 
-        total_prestamos    = len(prestamos)
-        al_dia             = sum(1 for p in prestamos if p["estado"] == "VIGENTE" and p["dias_atraso_actual"] == 0)
-        con_atraso         = sum(1 for p in prestamos if p.get("dias_atraso_actual", 0) > 0)
-        refinanciados      = sum(1 for p in prestamos if p["estado"] == "REFINANCIADO")
-        irrecuperables     = sum(1 for p in prestamos if p["estado"] == "IRRECUPERABLE")
+        cutoff = cutoff or date.today().isoformat()
+        df = cargar_features(self.session.connection(), cutoff, cliente_id=cliente_id)
 
-        saldo_ahorro    = next((s["saldo_promedio"] for s in saldos if s["tipo_cuenta"] == "CAJA_AHORRO"), 0) or 0
-        saldo_corriente = next((s["saldo_promedio"] for s in saldos if s["tipo_cuenta"] == "CTA_CORRIENTE"), 0) or 0
-        saldo_min       = min((s["saldo_minimo"] for s in saldos), default=0) or 0
+        if df.empty:          # cliente sin préstamos: thin-file
+            return features_sin_historial()
 
-        deuda_vigente   = sum(
-            p["saldo_capital_actual"] for p in prestamos
-            if p["estado"] not in ("CANCELADO", "IRRECUPERABLE")
-        )
-        ingreso         = float(basicos.get("ingreso_neto_declarado") or 0)
-        cap_pago        = ingreso * 0.30   # Criterio estándar: 30% del ingreso
-
-        fecha_ingreso   = basicos.get("fecha_ingreso_entidad")
-        antiguedad_meses = 0
-        if fecha_ingreso:
-            antiguedad_meses = max(0, (datetime.now().date() - to_date(fecha_ingreso)).days // 30)
-
-        ultimo_prestamo     = prestamos[0] if prestamos else {}
-        ult_fecha           = ultimo_prestamo.get("fecha_otorgamiento")
-        ult_hace_meses      = 0
-        if ult_fecha:
-            ult_hace_meses = max(0, (datetime.now().date() - to_date(ult_fecha)).days // 30)
-
-        return {
-            "total_prestamos":            total_prestamos,
-            "prestamos_al_dia":           al_dia,
-            "prestamos_con_atraso":       con_atraso,
-            "max_dias_atraso_historico":  pagos.get("max_dias_atraso_periodo") or 0,
-            "dias_atraso_promedio":       float(pagos.get("promedio_dias_atraso") or 0),
-            "prestamos_refinanciados":    refinanciados,
-            "prestamos_irrecuperables":   irrecuperables,
-            "cuotas_puntuales_24m":       int(pagos.get("cuotas_puntuales") or 0),
-            "atraso_leve_24m":            int(pagos.get("atraso_leve_1_30d") or 0),
-            "atraso_moderado_24m":        int(pagos.get("atraso_moderado_31_90d") or 0),
-            "atraso_grave_24m":           int(pagos.get("atraso_grave_mas90d") or 0),
-            "saldo_promedio_ahorro_6m":   float(saldo_ahorro),
-            "saldo_promedio_corriente_6m":float(saldo_corriente),
-            "saldo_minimo_6m":            float(saldo_min),
-            "deuda_vigente_total":        float(deuda_vigente),
-            "capacidad_pago_estimada":    float(cap_pago),
-            "antiguedad_meses":           antiguedad_meses,
-            "productos_activos":          len(saldos),
-            "ultimo_prestamo_monto":      float(ultimo_prestamo.get("monto_original") or 0),
-            "ultimo_prestamo_hace_meses": ult_hace_meses,
-            "tasa_cumplimiento":          _num(al_dia) / _num(total_prestamos) if total_prestamos > 0 else 0,
-            "ratio_deuda_ingresos":       _num(deuda_vigente) / _num(ingreso) if _num(ingreso) > 0 else 999,
-        }
+        fila = df.iloc[0]
+        return {c: float(fila[c]) for c in FEATURE_COLUMNS}

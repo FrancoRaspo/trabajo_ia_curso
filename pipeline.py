@@ -4,6 +4,8 @@ print("[DBG] dotenv loaded", flush=True)
 
 import copy
 import os
+import uuid
+from collections import OrderedDict
 from datetime import datetime
 from sqlalchemy import text
 print("[DBG] core libs imported", flush=True)
@@ -12,10 +14,30 @@ from external.bcra_normalizer import formato_pesos
 
 from db.sqlserver_connection import get_sqlserver_session
 from db.postgres_connection import get_postgres_session
-from db.client_repository import ClientRepository
+from db.client_repository import ClientRepository, TABLAS_SQLSERVER
 from ml.scoring_model import CreditScoringModel
 from prompts import load as load_prompt   # textos de prompts en prompts/*.txt
 print("[DBG] project modules imported", flush=True)
+
+
+def descripcion_modelo_scoring(path: str = "models/model_card.json") -> str:
+    """Identifica el modelo que produjo el score, para el log auditable.
+
+    Se lee del model card, no de un literal: antes decía "XGBoost v1.0", que no
+    correspondía a ningún modelo entrenado y no permitía saber cuál se había
+    usado. Si un informe se cuestiona, esto es lo que dice qué lo generó.
+    """
+    import json
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            card = json.load(f)
+    except (OSError, ValueError):
+        return "desconocido (falta models/model_card.json)"
+
+    return (f"{card.get('modelo', 'desconocido')} "
+            f"(xgboost {card.get('xgboost_version', '?')}, "
+            f"entrenado {card.get('generado', '?')}, "
+            f"target {card.get('target', {}).get('horizonte_meses', '?')}m)")
 
 
 class ClienteNoEncontrado(Exception):
@@ -61,10 +83,166 @@ def _fmt_campos(d: dict, claves) -> None:
             pass            # no es numérico: se deja como está
 
 
+# ===========================================================================
+#  SESIONES EN MEMORIA (para regenerar UNA sección desde el modo admin)
+# ===========================================================================
+# Tras generar un informe se retiene su contexto (ya formateado) y el cuerpo de
+# cada sección, indexados por un sesion_id. Así el admin puede editar un prompt y
+# regenerar SOLO esa sección sin re-consultar SQL Server / ML / RAG / BCRA.
+# Acotado a las últimas _SESIONES_MAX; vive en RAM y se limpia al reiniciar.
+_SESIONES: "OrderedDict[str, dict]" = OrderedDict()
+_SESIONES_MAX = 20
+
+
+def _guardar_sesion(sesion_id: str, contexto_fmt: dict, bodies: dict) -> None:
+    _SESIONES[sesion_id] = {"contexto": contexto_fmt, "bodies": dict(bodies or {})}
+    _SESIONES.move_to_end(sesion_id)
+    while len(_SESIONES) > _SESIONES_MAX:
+        _SESIONES.popitem(last=False)          # descarta la sesión más vieja
+
+
+# ---------------------------------------------------------------------------
+#  Hechos derivados: identificadores y aritmética de fechas
+#
+# El LLM no debe DERIVAR nada verificable, sólo narrar lo que se le da. Los dos
+# errores más frecuentes que marcaba el juez venían de pedirle exactamente eso:
+#
+#   - Antigüedades y "hace cuánto" mal calculados ("aproximadamente 27 años"
+#     cuando eran 28,6; "hace 8 meses" cuando eran 20). Los LLM son malos en
+#     aritmética de fechas y no hay razón para pedírsela: la calculamos acá.
+#   - CUIT "inventado": el modelo tomaba el DNI y lo formateaba como CUIT
+#     (20-04658409-1). El CUIT ES la clave de la consulta; simplemente no se lo
+#     estábamos pasando ya formateado.
+#
+# Mismo criterio que con los importes: el dato llega listo para copiar.
+# ---------------------------------------------------------------------------
+
+def _fmt_cuit(cuit: str) -> str:
+    """20123456789 -> 20-12345678-9. Si no tiene 11 dígitos, se devuelve igual."""
+    d = "".join(ch for ch in str(cuit or "") if ch.isdigit())
+    return f"{d[:2]}-{d[2:10]}-{d[10]}" if len(d) == 11 else str(cuit or "")
+
+
+def _fmt_fecha(v) -> str | None:
+    """ISO / datetime -> DD/MM/AAAA."""
+    d = _a_fecha(v)
+    return d.strftime("%d/%m/%Y") if d else None
+
+
+def _a_fecha(v):
+    if isinstance(v, datetime):
+        return v.date()
+    if hasattr(v, "year") and not isinstance(v, str):
+        return v
+    try:
+        return datetime.fromisoformat(str(v).strip().replace(" ", "T")).date()
+    except (TypeError, ValueError):
+        return None
+
+
+def _antiguedad(desde, hasta) -> tuple[int, str] | tuple[None, None]:
+    """(meses, 'X años y Y meses') entre dos fechas. Redondeo a mes cumplido."""
+    a, b = _a_fecha(desde), _a_fecha(hasta)
+    if not a or not b or b < a:
+        return None, None
+    meses = (b.year - a.year) * 12 + (b.month - a.month) - (1 if b.day < a.day else 0)
+    meses = max(meses, 0)
+    anios, resto = divmod(meses, 12)
+    if anios and resto:
+        txt = f"{anios} años y {resto} meses"
+    elif anios:
+        txt = f"{anios} años"
+    else:
+        txt = f"{resto} meses"
+    return meses, txt
+
+
+def _resumen_cartera(prestamos) -> dict | None:
+    """Agrega la cartera de préstamos en hechos que el LLM NO debe derivar solo.
+
+    El juez detectó que el modelo contaba mal los préstamos, confundía el período
+    (año del último otorgamiento) e inventaba desgloses por oficial de cuenta. Nada
+    de eso hay que pedírselo: se calcula acá, sobre los montos CRUDOS (antes de
+    formatear), y el saldo vivo total se formatea a pesos en el momento. Igual
+    criterio que con fechas e importes: el dato llega listo para copiar.
+    """
+    items = [p for p in (prestamos or []) if isinstance(p, dict)]
+    if not items:
+        return None
+    from collections import Counter
+    estados = Counter((str(p.get("estado") or "SIN ESTADO").upper()) for p in items)
+    vigentes = [p for p in items if str(p.get("estado") or "").upper() == "VIGENTE"]
+
+    def _suma(campo, filas):
+        t = 0.0
+        for p in filas:
+            try:
+                t += float(p.get(campo) or 0)
+            except (TypeError, ValueError):
+                pass
+        return t
+
+    fechas = [f for f in (_a_fecha(p.get("fecha_otorgamiento")) for p in items) if f]
+    resumen = {
+        "total":                len(items),
+        "por_estado":           dict(estados),
+        "vigentes":             len(vigentes),
+        "saldo_vivo_total":     formato_pesos(_suma("saldo_capital_actual", vigentes)),
+        "monto_original_total": formato_pesos(_suma("monto_original", items)),
+        "periodo_desde_texto":  min(fechas).strftime("%d/%m/%Y") if fechas else None,
+        "periodo_hasta_texto":  max(fechas).strftime("%d/%m/%Y") if fechas else None,
+    }
+    # Los campos sueltos no alcanzaron: el modelo los recibía y aun así recomponía
+    # mal los agregados en el Resumen y la Recomendación. `frase` es esa misma
+    # información YA REDACTADA, para que sólo tenga que transcribirla.
+    from llm.plantillas import cartera_frase
+    resumen["frase"] = cartera_frase(resumen)
+    return resumen
+
+
+def _derivar_hechos(ctx: dict) -> dict:
+    """Agrega al contexto (ya copiado) los hechos que el LLM NO debe calcular."""
+    hoy = ctx.get("fecha_informe")
+
+    ctx["cuit"] = _fmt_cuit(ctx.get("cliente_id"))
+    ctx["fecha_informe_texto"] = _fmt_fecha(hoy)
+
+    datos = ctx.get("datos_cliente")
+    if isinstance(datos, dict):
+        ing = datos.get("fecha_ingreso_entidad")
+        meses, txt = _antiguedad(ing, hoy)
+        datos["cuit"] = ctx["cuit"]
+        datos["fecha_ingreso_entidad_texto"] = _fmt_fecha(ing)
+        datos["antiguedad_meses"] = meses
+        datos["antiguedad_texto"] = txt
+
+    for p in (ctx.get("historial_prestamos") or []):
+        if not isinstance(p, dict):
+            continue
+        otorg = p.get("fecha_otorgamiento")
+        meses, txt = _antiguedad(otorg, hoy)
+        p["fecha_otorgamiento_texto"] = _fmt_fecha(otorg)
+        p["fecha_vencimiento_texto"] = _fmt_fecha(p.get("fecha_vencimiento"))
+        p["otorgado_hace_meses"] = meses
+        p["otorgado_hace_texto"] = f"hace {txt}" if txt else None
+
+    for g in (ctx.get("gestiones_mora") or []):
+        if isinstance(g, dict):
+            g["fecha_gestion_texto"] = _fmt_fecha(g.get("fecha_gestion"))
+            g["fecha_compromiso_pago_texto"] = _fmt_fecha(g.get("fecha_compromiso_pago"))
+
+    # Agregados de la cartera (conteo, estados, saldo vivo, período) ya resueltos,
+    # para que la sección Historial no los derive a mano (los contaba mal).
+    ctx["cartera_resumen"] = _resumen_cartera(ctx.get("historial_prestamos"))
+
+    return ctx
+
+
 def _fmt_montos_contexto(contexto: dict) -> dict:
-    """Copia del contexto con los importes ya formateados en pesos argentinos.
+    """Copia del contexto con los importes ya formateados en pesos argentinos y
+    los hechos temporales / identificadores ya derivados.
     No muta el original: ese sigue siendo la fuente de verdad (validador/juez)."""
-    ctx = copy.deepcopy(contexto)
+    ctx = _derivar_hechos(copy.deepcopy(contexto))
 
     datos = ctx.get("datos_cliente")
     if isinstance(datos, dict):
@@ -366,13 +544,17 @@ class ReportPipeline:
         # Generación por secciones, en streaming. armar_informe_stream emite
         # eventos {seccion|token} en vivo y, al final, {informe: <doc completo>}
         # ya ordenado (Resumen arriba) para el render final.
-        from llm.report_sections import armar_informe_stream
+        from llm.report_sections import armar_informe_stream, resumen_datos_secciones
         informe_texto = ""
+        bodies = {}
         # El LLM recibe los importes ya formateados (string); el contexto crudo
-        # se conserva para validación, log y juez.
-        for ev in armar_informe_stream(_fmt_montos_contexto(contexto), self.llm):
+        # se conserva para validación, log y juez. Guardamos el MISMO contexto
+        # formateado para poder regenerar una sección idéntica más tarde.
+        contexto_fmt = _fmt_montos_contexto(contexto)
+        for ev in armar_informe_stream(contexto_fmt, self.llm):
             if ev["tipo"] == "informe":
                 informe_texto = ev["texto"]
+                bodies = ev.get("bodies", {})
             else:                       # "seccion" / "token" -> se reenvían a la UI
                 yield ev
 
@@ -381,9 +563,61 @@ class ReportPipeline:
         yield {"tipo": "validacion",
                "aprobado":     validacion.get("aprobado", True),
                "advertencias": validacion.get("advertencias", [])}
+        # Retener la sesión para permitir regenerar una sección desde el admin.
+        sesion_id = uuid.uuid4().hex
+        _guardar_sesion(sesion_id, contexto_fmt, bodies)
         # 'informe' lleva el documento en orden de lectura para el render final
         # (durante el stream las secciones llegan en orden de ejecución).
-        yield {"tipo": "fin", "informe": informe_texto}
+        # 'datos_secciones': resumen legible de los datos fuente por sección, para
+        # que el lector vea la relación entre el texto del informe y los datos.
+        yield {"tipo": "fin", "informe": informe_texto, "sesion_id": sesion_id,
+               "datos_secciones": resumen_datos_secciones(contexto_fmt)}
+
+    def contexto_sesion(self, sesion_id: str) -> dict:
+        """Devuelve el contexto (ya formateado) que generó el informe de la sesión,
+        para que el admin vea los datos fuente. Lanza KeyError si no existe."""
+        ses = _SESIONES.get(sesion_id)
+        if ses is None:
+            raise KeyError("La sesión del informe expiró (o el servidor se reinició). "
+                           "Generá el informe de nuevo para ver sus datos.")
+        return ses["contexto"]
+
+    def datos_seccion(self, sesion_id: str, section_id: str):
+        """Devuelve (titulo, ctx_dict) con los datos EXACTOS que recibe una sección
+        (el mismo JSON que se le pasa al modelo). Lanza KeyError/ValueError."""
+        ses = _SESIONES.get(sesion_id)
+        if ses is None:
+            raise KeyError("La sesión del informe expiró (o el servidor se reinició). "
+                           "Generá el informe de nuevo para ver sus datos.")
+        from llm.report_sections import especificacion_seccion
+        titulo, _prompt, ctx = especificacion_seccion(
+            section_id, ses["contexto"], ses["bodies"])
+        return titulo, ctx
+
+    def regenerar_seccion_stream(self, sesion_id: str, section_id: str):
+        """Regenera UNA sección de un informe ya generado, en streaming, usando el
+        contexto retenido en memoria (sin re-consultar SQL/ML/RAG/BCRA). Relee el
+        prompt del .txt, así toma la última edición del admin. Actualiza el cuerpo
+        guardado (para que una regeneración posterior de Recomendación/Resumen use
+        la versión vigente).
+
+        Eventos: {"tipo":"seccion",...}, {"tipo":"token",...},
+                 {"tipo":"fin_seccion","texto": <cuerpo nuevo>, "section_id":...}
+        Lanza KeyError si la sesión no existe (p. ej. el server se reinició)."""
+        ses = _SESIONES.get(sesion_id)
+        if ses is None:
+            raise KeyError("La sesión del informe expiró (o el servidor se reinició). "
+                           "Generá el informe de nuevo para volver a editar sus secciones.")
+        from llm.report_sections import (especificacion_seccion,
+                                          regenerar_seccion_stream as _regen)
+        titulo, _prompt, _ctx = especificacion_seccion(
+            section_id, ses["contexto"], ses["bodies"])
+        yield {"tipo": "seccion", "titulo": titulo, "section_id": section_id}
+        nuevo = yield from _regen(section_id, ses["contexto"], ses["bodies"], self.llm)
+        ses["bodies"][section_id] = nuevo          # el cuerpo vigente pasa a ser este
+        _SESIONES.move_to_end(sesion_id)
+        yield {"tipo": "fin_seccion", "texto": nuevo,
+               "section_id": section_id, "titulo": titulo}
 
     def _stream_informe_sin_datos(self, cliente_id: str, tipo_decision: str,
                                   razon_social: str):
@@ -513,9 +747,9 @@ class ReportPipeline:
 
     def _trazabilidad(self, ctx) -> dict:
         bcra = ctx.get("bcra") or {}
+        scoring = ctx.get("scoring") or {}
         return {
-            "fuentes_sql_server": ["clientes", "prestamos", "cuotas",
-                                   "saldos_diarios", "gestiones_mora"],
+            "fuentes_sql_server": list(TABLAS_SQLSERVER),
             "fuentes_pgvector": {
                 "notas_mora":     len(ctx["rag"]["notas_mora"]),
                 "politicas":      len(ctx["rag"]["politicas"]),
@@ -528,7 +762,14 @@ class ReportPipeline:
                 "cant_entidades":  bcra.get("cant_entidades"),
                 "cheques_impagos": bcra.get("cheques_impagos"),
             },
-            "modelo_scoring": "XGBoost v1.0",
+            "modelo_scoring": descripcion_modelo_scoring(),
+            # PD cruda vs PD publicada: si algún día vuelve a haber calibración,
+            # el auditor tiene que poder ver ambas y cuál se usó.
+            "scoring_pd": {
+                "prob_default":       scoring.get("prob_default"),
+                "prob_default_cruda": scoring.get("prob_default_cruda"),
+                "calibracion":        scoring.get("calibracion"),
+            },
             "modelo_llm":     self._nombre_llm(),
             "modelo_embedding": self._nombre_embedding(),
         }
@@ -584,7 +825,7 @@ def get_pipeline(llm_provider: str = "local") -> "ReportPipeline":
 if __name__ == "__main__":
     pipeline = ReportPipeline(llm_provider="local")
     resultado = pipeline.generar(
-        cliente_id="27299772417",
+        cliente_id="20123456789",
         tipo_decision="Aprobación préstamo personal $1.000.000 — 24 cuotas",
         oficial_solicitante="Lic. Franco S RASPO",
     )

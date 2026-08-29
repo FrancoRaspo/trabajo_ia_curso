@@ -17,6 +17,8 @@ Para correr (parado en la carpeta del proyecto, junto a pipeline.py):
 Luego abrir: http://127.0.0.1:8000
 """
 
+import hashlib
+import hmac
 import html
 import io
 import json
@@ -28,7 +30,7 @@ from datetime import datetime
 
 from typing import Any
 
-from fastapi import FastAPI, Form, File, UploadFile
+from fastapi import FastAPI, Form, File, UploadFile, Header, HTTPException
 from fastapi.responses import HTMLResponse, StreamingResponse, Response, JSONResponse
 from pydantic import BaseModel
 
@@ -51,6 +53,35 @@ PROVEEDOR_LLM = os.environ.get("PROVEEDOR_LLM", "local")   # "local" / "anthropi
 
 # Nombre de la institución, tomado del entorno (.env -> EMPRESA_NOMBRE).
 EMPRESA = os.environ.get("EMPRESA_NOMBRE", "Mi Institución")
+
+# ---------------------------------------------------------------------------
+#  Modo administrador (editar prompts + regenerar secciones)
+# ---------------------------------------------------------------------------
+# La autenticación es una contraseña compartida en .env (ADMIN_PASSWORD). Si está
+# vacía, el modo admin queda DESHABILITADO (default seguro). El token que se
+# entrega al iniciar sesión es un HMAC de la contraseña: se puede verificar sin
+# guardar estado en el server, y no revela la contraseña.
+ADMIN_PASSWORD = (os.environ.get("ADMIN_PASSWORD") or "").strip()
+
+
+def _admin_token() -> str:
+    """Token de sesión admin: HMAC-SHA256(ADMIN_PASSWORD, 'trabajo_ia_admin')."""
+    return hmac.new(ADMIN_PASSWORD.encode("utf-8"),
+                    b"trabajo_ia_admin", hashlib.sha256).hexdigest()
+
+
+def _es_admin(token: str) -> bool:
+    """True si el token corresponde a la contraseña admin (comparación en tiempo
+    constante). Siempre False si ADMIN_PASSWORD no está configurada."""
+    if not ADMIN_PASSWORD or not token:
+        return False
+    return hmac.compare_digest(token, _admin_token())
+
+
+def _requerir_admin(token: str) -> None:
+    """Corta con 401 si el token no es de admin. Usar al inicio de cada endpoint admin."""
+    if not _es_admin(token):
+        raise HTTPException(status_code=401, detail="No autorizado (modo administrador).")
 
 def nuevo_numero_informe() -> str:
     """Genera un número de informe único y legible: INF-AAAAMMDD-HHMMSS."""
@@ -209,6 +240,69 @@ button.secundario { background: transparent; color: var(--tinta); border: 1px so
 .validacion h3 { margin: 0 0 8px; font-size: 14px; letter-spacing: .03em; }
 .validacion ul { margin: 0; padding-left: 18px; }
 
+/* ---- Modo administrador: barra, editor de prompts, edición por sección ---- */
+.acciones-sup { display: flex; gap: 8px; align-items: center; }
+.sec { position: relative; }
+.sec-editar { position: absolute; top: 22px; right: 0; font: inherit; font-size: 12px;
+  font-weight: 600; cursor: pointer; background: transparent; color: var(--acento);
+  border: 1px solid var(--linea); border-radius: 999px; padding: 3px 10px; }
+.sec-editar:hover { background: var(--papel); border-color: var(--acento); }
+.sec.regenerando .sec-cuerpo { opacity: .7; }
+body:not([data-admin]) .sec-editar { display: none; }
+
+/* Trazabilidad: resumen de datos fuente por sección (visible para todo lector) */
+.sec-datos { margin: 6px 0 18px; border: 1px solid var(--linea); border-radius: 8px;
+  background: var(--papel); font-size: 13px; }
+.sec-datos > summary { cursor: pointer; padding: 8px 12px; font-weight: 600;
+  color: var(--acento); list-style: none; user-select: none; }
+.sec-datos > summary::-webkit-details-marker { display: none; }
+.sec-datos > summary::before { content: '▸ '; }
+.sec-datos[open] > summary::before { content: '▾ '; }
+.sec-datos-tabla { width: 100%; border-collapse: collapse; margin: 0 0 4px; }
+.sec-datos-tabla th, .sec-datos-tabla td { text-align: left; padding: 5px 12px;
+  vertical-align: top; border-top: 1px solid var(--linea); }
+.sec-datos-tabla th { font-weight: 600; color: var(--tinta-2, #667); width: 45%; }
+.sec-datos-tabla tr.dato-alerta td, .sec-datos-tabla tr.dato-alerta th { color: var(--error); }
+
+.modal { position: fixed; inset: 0; background: rgba(10,14,20,.55); display: flex;
+  align-items: flex-start; justify-content: center; padding: 40px 16px; z-index: 50; overflow: auto; }
+.modal.oculto { display: none; }
+.modal-caja { background: var(--tarjeta); border: 1px solid var(--linea); border-radius: 12px;
+  width: 100%; max-width: 760px; box-shadow: 0 12px 40px rgba(0,0,0,.3); }
+.modal-cab { display: flex; justify-content: space-between; align-items: center;
+  padding: 16px 20px; border-bottom: 1px solid var(--linea); }
+.modal-cab strong { font-family: Georgia, serif; font-size: 18px; }
+.modal-cab .cerrar { background: transparent; color: var(--tinta-suave); border: 0;
+  font-size: 18px; padding: 4px 8px; cursor: pointer; }
+.modal-cuerpo { padding: 18px 20px 24px; }
+.editor-ayuda { color: var(--tinta-suave); font-size: 13px; margin: 0 0 16px; }
+.p-grupo { font-size: 12px; letter-spacing: .12em; text-transform: uppercase; color: var(--acento);
+  margin: 18px 0 8px; border-bottom: 1px solid var(--linea); padding-bottom: 4px; }
+.p-item { border: 1px solid var(--linea); border-radius: 8px; padding: 12px 14px;
+  margin: 0 0 14px; background: var(--papel); }
+.p-tit { font-weight: 600; font-size: 14px; }
+.p-name { font-weight: 400; font-size: 12px; color: var(--tinta-suave); margin-left: 6px; }
+.p-desc { color: var(--tinta-suave); font-size: 12.5px; margin: 4px 0 8px; }
+.p-ta { width: 100%; min-height: 120px; margin: 0 0 8px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; line-height: 1.5; }
+.p-acc { display: flex; align-items: center; gap: 10px; }
+.p-acc button { padding: 7px 14px; font-size: 13px; }
+.p-msg { font-size: 12.5px; }
+.p-msg.ok { color: var(--ok); }
+.p-msg.err { color: var(--error); }
+.adm-pass { max-width: 280px; }
+.regen-bar { margin-top: 6px; display: flex; align-items: center; gap: 10px; }
+.btn-regen { background: var(--acento); color: #fff; }
+
+.datos-sec { margin: 0 0 16px; border: 1px solid var(--linea); border-radius: 8px; background: var(--papel); }
+.datos-sec > summary { cursor: pointer; padding: 10px 14px; font-size: 13px; font-weight: 600;
+  color: var(--tinta-suave); list-style: none; user-select: none; }
+.datos-sec > summary:hover { color: var(--tinta); }
+.datos-sec[open] > summary { border-bottom: 1px solid var(--linea); }
+.datos-json { margin: 0; max-height: 320px; overflow: auto; padding: 12px 14px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; line-height: 1.5;
+  white-space: pre-wrap; word-break: break-word; color: var(--tinta); }
+
 @media print {
   /* Forzar hoja blanca con letras negras, sin importar el tema activo. */
   :root, [data-tema="dark"] {
@@ -218,7 +312,7 @@ button.secundario { background: transparent; color: var(--tinta); border: 1px so
     --btn-bg: #ffffff; --btn-fg: #000000;
   }
   body { background: #ffffff; color: #000000; }
-  .barra-acciones, .marca, .progreso, .barra-sup { display: none; }
+  .barra-acciones, .marca, .progreso, .barra-sup, .modal, .sec-editar, .sec-datos { display: none; }
   .informe { border: 0; padding: 0; }
   .doc-empresa, .meta strong, .informe-texto strong,
   .informe-texto h1, .informe-texto h2, .informe-texto h3 { color: #000000; }
@@ -247,7 +341,12 @@ def pagina(titulo: str, contenido: str) -> str:
 CONTENIDO = """
   <div class="barra-sup">
     <div class="marca">__EMPRESA__</div>
-    <button type="button" id="btnTema" class="btn-tema" onclick="alternarTema()">Modo oscuro</button>
+    <div class="acciones-sup">
+      <button type="button" id="btnDatos" class="btn-tema" onclick="abrirDatosGlobal()" style="display:none;">Datos</button>
+      <button type="button" id="btnPrompts" class="btn-tema" onclick="abrirPromptsGlobal()" style="display:none;">Prompts</button>
+      <button type="button" id="btnAdmin" class="btn-tema" onclick="toggleAdmin()">🔒 Admin</button>
+      <button type="button" id="btnTema" class="btn-tema" onclick="alternarTema()">Modo oscuro</button>
+    </div>
   </div>
   <h1>Generador de informes</h1>
   <p class="subtitulo">Describí la consulta en lenguaje natural. El sistema identifica al asociado y genera el informe.</p>
@@ -291,6 +390,17 @@ CONTENIDO = """
     </div>
   </div>
 
+  <!-- Modal del modo administrador (login / editor de prompts) -->
+  <div id="modalAdmin" class="modal oculto">
+    <div class="modal-caja">
+      <div class="modal-cab">
+        <strong id="modalTitulo">Prompts</strong>
+        <button type="button" class="cerrar" onclick="cerrarModal()" aria-label="Cerrar">✕</button>
+      </div>
+      <div class="modal-cuerpo" id="modalCuerpo"></div>
+    </div>
+  </div>
+
   <script>
     const form = document.getElementById('form');
     const aviso = document.getElementById('aviso');
@@ -307,6 +417,16 @@ CONTENIDO = """
     let mdCrudo = '';
     let rafRender = null;   // id de requestAnimationFrame para agrupar renders
     let datosInforme = {};  // datos del membrete (del evento meta) para el PDF
+
+    // --- Estado del modo administrador ---
+    let sesionId = '';        // id de la sesión del informe (para regenerar secciones)
+    let adminToken = '';      // token de admin (si hay sesión iniciada)
+    let adminConfig = null;   // catálogo de prompts + mapa de secciones (de /admin/config)
+    let secModelo = [];       // [{titulo, cuerpo}] del informe renderizado por secciones
+    let datosSecciones = {};  // {titulo: [{etiqueta,valor,alerta}]} datos fuente por sección (trazabilidad)
+    let encabezadoMd = '';    // markdown previo a la 1ª sección (membrete del documento)
+    const promptOriginal = {}; // contenido original de cada prompt (para detectar cambios)
+    const ADMIN_HABILITADO = ('__ADMIN_HABILITADO__' === '1');
 
     const ETIQUETAS = {
       extraccion: 'Interpretando la consulta…',
@@ -563,12 +683,363 @@ CONTENIDO = """
         // 'fin' trae el documento en orden de lectura (Resumen arriba). Si viene,
         // se usa para el render final; si no, se cae al texto acumulado.
         datosInforme.informe = ev.informe || mdCrudo;   // markdown final para el PDF
-        elTexto.innerHTML = mdToHtml(datosInforme.informe);
+        datosSecciones = ev.datos_secciones || {};      // datos fuente por sección (trazabilidad)
+        sesionId = ev.sesion_id || '';                  // habilita regenerar secciones
+        // Render por secciones (contenedores independientes): permite, en modo
+        // admin, regenerar UNA sección in situ sin tocar el resto.
+        renderInformePorSecciones(datosInforme.informe);
+        if (typeof actualizarBotonesAdmin === 'function') actualizarBotonesAdmin();
         accionesFin.style.display = 'flex';
       } else if (ev.tipo === 'error') {
         volverConError(ev.mensaje || 'Ocurrió un error.');
       }
     }
+
+    // =====================================================================
+    //  MODO ADMINISTRADOR
+    // =====================================================================
+    const modal = document.getElementById('modalAdmin');
+    const modalTitulo = document.getElementById('modalTitulo');
+    const modalCuerpo = document.getElementById('modalCuerpo');
+
+    function esAdmin() { return !!adminToken; }
+    function mostrarModal() { modal.classList.remove('oculto'); }
+    function cerrarModal() { modal.classList.add('oculto'); }
+
+    // Llamada genérica a la API admin (agrega el header del token).
+    async function apiAdmin(url, metodo, body) {
+      const opts = { method: metodo, headers: { 'X-Admin-Token': adminToken } };
+      if (body !== undefined) { opts.headers['Content-Type'] = 'application/json'; opts.body = JSON.stringify(body); }
+      let resp;
+      try { resp = await fetch(url, opts); }
+      catch (e) { return { ok: false, error: 'Sin conexión con el servidor.' }; }
+      if (resp.status === 401) return { __noauth: true, ok: false, error: 'No autorizado.' };
+      let data = {}; try { data = await resp.json(); } catch (e) {}
+      if (metodo === 'GET') { data.ok = resp.ok; return data; }
+      if (!resp.ok) return { ok: false, error: data.error || ('Error ' + resp.status) };
+      return Object.assign({ ok: true }, data);
+    }
+
+    // --- Login / logout ---
+    function toggleAdmin() { if (esAdmin()) salirAdmin(); else abrirLogin(); }
+
+    function abrirLogin() {
+      modalTitulo.textContent = 'Modo administrador';
+      modalCuerpo.innerHTML =
+        '<p class="editor-ayuda">Ingresá la contraseña de administrador para ver y editar los prompts del sistema.</p>' +
+        '<input type="password" id="admPass" class="adm-pass" placeholder="Contraseña" autocomplete="current-password">' +
+        '<div class="p-acc"><button id="btnLogin" type="button">Ingresar</button><span class="p-msg" id="loginMsg"></span></div>';
+      mostrarModal();
+      const inp = document.getElementById('admPass');
+      inp.focus();
+      document.getElementById('btnLogin').addEventListener('click', hacerLogin);
+      inp.addEventListener('keydown', e => { if (e.key === 'Enter') hacerLogin(); });
+    }
+
+    async function hacerLogin() {
+      const inp = document.getElementById('admPass');
+      const msg = document.getElementById('loginMsg');
+      let resp, data = {};
+      try {
+        resp = await fetch('/admin/login', { method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ password: inp.value }) });
+        data = await resp.json().catch(() => ({}));
+      } catch (e) { msg.textContent = 'Sin conexión con el servidor.'; msg.className = 'p-msg err'; return; }
+      if (!resp.ok || !data.token) { msg.textContent = data.error || 'No se pudo iniciar sesión.'; msg.className = 'p-msg err'; return; }
+      adminToken = data.token;
+      try { localStorage.setItem('admin_token', adminToken); } catch (e) {}
+      const ok = await activarAdmin();
+      if (ok) cerrarModal();
+    }
+
+    // Muestra/oculta los botones admin (Prompts siempre en admin; Datos solo si
+    // hay un informe generado en pantalla).
+    function actualizarBotonesAdmin() {
+      const admin = esAdmin() && !!adminConfig;
+      document.getElementById('btnPrompts').style.display = admin ? '' : 'none';
+      document.getElementById('btnDatos').style.display = (admin && sesionId) ? '' : 'none';
+    }
+
+    async function activarAdmin() {
+      const cfg = await apiAdmin('/admin/config', 'GET');
+      if (!cfg || cfg.__noauth || !cfg.prompts) { salirAdmin(); return false; }
+      adminConfig = cfg;
+      document.body.setAttribute('data-admin', '1');
+      document.getElementById('btnAdmin').textContent = '🔓 Salir admin';
+      actualizarBotonesAdmin();
+      // Si ya hay un informe en pantalla, re-render para mostrar los botones de edición.
+      if (secModelo.length) renderInformePorSecciones(datosInforme.informe);
+      return true;
+    }
+
+    function salirAdmin() {
+      adminToken = ''; adminConfig = null;
+      try { localStorage.removeItem('admin_token'); } catch (e) {}
+      document.body.removeAttribute('data-admin');
+      document.getElementById('btnAdmin').textContent = '🔒 Admin';
+      actualizarBotonesAdmin();
+      if (secModelo.length) renderInformePorSecciones(datosInforme.informe);
+    }
+
+    // Visor global: todos los datos fuente del informe (solo lectura).
+    async function abrirDatosGlobal() {
+      if (!sesionId) { mostrarAviso('Generá un informe primero para ver sus datos.'); return; }
+      modalTitulo.textContent = 'Datos del informe';
+      modalCuerpo.innerHTML = '<p class="editor-ayuda">Cargando datos…</p>';
+      mostrarModal();
+      const d = await apiAdmin('/admin/datos/' + encodeURIComponent(sesionId), 'GET');
+      if (!d || !d.ok || d.__noauth) {
+        modalCuerpo.innerHTML = '<p class="p-msg err">' + escapar((d && d.error) || 'No se pudieron cargar los datos.') + '</p>';
+        return;
+      }
+      modalCuerpo.innerHTML =
+        '<p class="editor-ayuda">Datos fuente con los que se generó el informe (cliente, historial, ' +
+        'scoring, BCRA y contexto cualitativo). Es lo que recibe el modelo. Solo lectura.</p>' +
+        '<pre class="datos-json">' + escapar(d.json) + '</pre>';
+    }
+
+    // --- Render del informe por secciones (contenedores independientes) ---
+    function parseSecciones(md) {
+      const lineas = (md || '').split('\\n');
+      let encab = [], secs = [], actual = null;
+      for (const ln of lineas) {
+        if (ln.slice(0, 3) === '## ') {
+          if (actual) secs.push(actual);
+          actual = { titulo: ln.slice(3).trim(), cuerpo: [] };
+        } else if (actual) { actual.cuerpo.push(ln); }
+        else { encab.push(ln); }
+      }
+      if (actual) secs.push(actual);
+      return {
+        encabezado: encab.join('\\n').trim(),
+        secciones: secs.map(s => ({ titulo: s.titulo, cuerpo: s.cuerpo.join('\\n').trim() })),
+      };
+    }
+
+    function idDeTitulo(titulo) {
+      if (adminConfig && adminConfig.titulos && adminConfig.titulos[titulo]) return adminConfig.titulos[titulo];
+      return '';
+    }
+
+    // Colapsable con el resumen de datos fuente de la sección (trazabilidad).
+    // Deja ver a cualquier lector la relación entre lo que dice el informe y los
+    // datos con los que se generó, sin exponer el JSON crudo.
+    function bloqueDatosHTML(titulo) {
+      const hechos = datosSecciones[titulo];
+      if (!hechos || !hechos.length) return '';
+      let filas = '';
+      for (const h of hechos) {
+        const cls = h.alerta ? ' class="dato-alerta"' : '';
+        filas += '<tr' + cls + '><th>' + escapar(h.etiqueta) + '</th><td>' + escapar(h.valor) + '</td></tr>';
+      }
+      return '<details class="sec-datos"><summary>📊 Datos con los que se generó esta sección</summary>' +
+             '<table class="sec-datos-tabla">' + filas + '</table></details>';
+    }
+
+    function bloqueSeccionHTML(s, idx) {
+      const sid = idDeTitulo(s.titulo);
+      const editable = esAdmin() && sesionId && sid;
+      const btn = editable
+        ? '<button class="sec-editar" data-sid="' + sid + '" data-idx="' + idx +
+          '" title="Ver/editar los prompts que afectan a esta sección">✎ prompts</button>'
+        : '';
+      return '<div class="sec" data-sec-idx="' + idx + '" data-sec-id="' + sid + '">' + btn +
+             '<div class="sec-cuerpo">' + mdToHtml('## ' + s.titulo + '\\n' + s.cuerpo) + '</div>' +
+             bloqueDatosHTML(s.titulo) + '</div>';
+    }
+
+    function renderInformePorSecciones(md) {
+      const p = parseSecciones(md);
+      encabezadoMd = p.encabezado;
+      secModelo = p.secciones;
+      let h = '';
+      if (encabezadoMd) h += '<div class="sec sec-encab">' + mdToHtml(encabezadoMd) + '</div>';
+      secModelo.forEach((s, idx) => { h += bloqueSeccionHTML(s, idx); });
+      elTexto.innerHTML = h;
+    }
+
+    // Reconstruye datosInforme.informe desde el modelo de secciones (para el PDF).
+    function rebuildInforme() {
+      const partes = [];
+      if (encabezadoMd) partes.push(encabezadoMd);
+      for (const s of secModelo) partes.push('## ' + s.titulo + '\\n' + s.cuerpo);
+      datosInforme.informe = partes.join('\\n\\n');
+    }
+
+    // --- Editor de prompts (global o por sección) ---
+    async function cargarPrompt(name) {
+      const d = await apiAdmin('/admin/prompt/' + encodeURIComponent(name), 'GET');
+      const contenido = (d && d.contenido) || '';
+      promptOriginal[name] = contenido;
+      return { name: name, titulo: (d && d.titulo) || name, contenido: contenido };
+    }
+
+    function metaPrompt(name) {
+      return (adminConfig && adminConfig.prompts.find(p => p.name === name)) || {};
+    }
+
+    function itemPromptHTML(it) {
+      const meta = metaPrompt(it.name);
+      return '<div class="p-item">' +
+        '<div class="p-tit">' + escapar(it.titulo) + '<span class="p-name">' + escapar(it.name) + '</span></div>' +
+        (meta.descripcion ? '<div class="p-desc">' + escapar(meta.descripcion) + '</div>' : '') +
+        '<textarea class="p-ta" data-name="' + escapar(it.name) + '" spellcheck="false">' + escapar(it.contenido) + '</textarea>' +
+        '<div class="p-acc"><button type="button" class="secundario btn-guardar-prompt" data-name="' + escapar(it.name) +
+        '">Guardar</button><span class="p-msg" id="msg-' + escapar(it.name) + '"></span></div>' +
+        '</div>';
+    }
+
+    async function abrirEditor(titulo, nombres, regenSid, regenIdx, conGrupos) {
+      modalTitulo.textContent = titulo;
+      modalCuerpo.innerHTML = '<p class="editor-ayuda">Cargando prompts…</p>';
+      mostrarModal();
+      // En el editor de sección, además de los prompts traemos los datos que
+      // recibe esa sección (para revisarlos junto al texto y decidir mejor).
+      const [items, datos] = await Promise.all([
+        Promise.all(nombres.map(cargarPrompt)),
+        regenSid ? apiAdmin('/admin/seccion/datos', 'POST', { sesion_id: sesionId, section_id: regenSid })
+                 : Promise.resolve(null),
+      ]);
+      let h = '';
+      if (regenSid) h += '<p class="editor-ayuda">Revisá el texto y, si hace falta, mejorá el prompt de esta sección. ' +
+        'Si hacés cambios, al regenerar se reescribe SOLO esta sección con los datos ya cargados (no se vuelve a consultar la base). ' +
+        'Los cambios valen también para los próximos informes. Las reglas comunes a todas las secciones se editan desde el botón «Prompts».</p>';
+      if (regenSid) {
+        const cuerpo = (datos && datos.ok && datos.json)
+          ? escapar(datos.json)
+          : escapar((datos && datos.error) || 'No se pudieron cargar los datos.');
+        h += '<details class="datos-sec"><summary>📊 Ver los datos que recibe esta sección</summary>' +
+             '<pre class="datos-json">' + cuerpo + '</pre></details>';
+      }
+      let grupoActual = '';
+      for (const it of items) {
+        if (conGrupos) {
+          const g = metaPrompt(it.name).grupo || '';
+          if (g && g !== grupoActual) { h += '<h4 class="p-grupo">' + escapar(g) + '</h4>'; grupoActual = g; }
+        }
+        h += itemPromptHTML(it);
+      }
+      if (regenSid) h += '<div class="regen-bar"><button type="button" id="btnRegen" class="btn-regen">' +
+        'Guardar y regenerar sección</button><span class="p-msg" id="regenMsg"></span></div>';
+      modalCuerpo.innerHTML = h;
+      modalCuerpo.querySelectorAll('.btn-guardar-prompt').forEach(b => {
+        b.addEventListener('click', () => guardarPrompt(b.dataset.name));
+      });
+      if (regenSid) document.getElementById('btnRegen').addEventListener('click',
+        () => guardarYRegenerar(nombres, regenSid, regenIdx));
+    }
+
+    function abrirPromptsGlobal() {
+      if (!adminConfig) return;
+      abrirEditor('Prompts del sistema', adminConfig.prompts.map(p => p.name), null, null, true);
+    }
+
+    function abrirPromptsSeccion(sid, idx) {
+      if (!adminConfig || !adminConfig.secciones[sid]) return;
+      const sec = adminConfig.secciones[sid];
+      // Editor ENFOCADO: solo el/los prompt(s) propios de esta sección. Las
+      // reglas comunes (compartidas por todas) se editan en el panel "Prompts".
+      const nombres = (sec.propios && sec.propios.length) ? sec.propios : sec.prompts;
+      abrirEditor('Prompt de: ' + sec.titulo, nombres, sid, idx, false);
+    }
+
+    async function guardarPrompt(name) {
+      const ta = modalCuerpo.querySelector('.p-ta[data-name="' + name + '"]');
+      const msg = document.getElementById('msg-' + name);
+      if (!ta) return false;
+      const r = await apiAdmin('/admin/prompt', 'POST', { name: name, contenido: ta.value });
+      if (r.ok) {
+        promptOriginal[name] = ta.value;
+        if (msg) { msg.textContent = 'Guardado ✓'; msg.className = 'p-msg ok'; }
+        return true;
+      }
+      if (msg) { msg.textContent = r.error || 'No se pudo guardar.'; msg.className = 'p-msg err'; }
+      return false;
+    }
+
+    async function guardarYRegenerar(nombres, sid, idx) {
+      const btn = document.getElementById('btnRegen');
+      const rmsg = document.getElementById('regenMsg');
+      btn.disabled = true; rmsg.textContent = 'Guardando cambios…'; rmsg.className = 'p-msg';
+      for (const n of nombres) {
+        const ta = modalCuerpo.querySelector('.p-ta[data-name="' + n + '"]');
+        if (ta && ta.value !== promptOriginal[n]) {
+          const ok = await guardarPrompt(n);
+          if (!ok) { rmsg.textContent = 'Corregí el prompt marcado en rojo y reintentá.'; rmsg.className = 'p-msg err'; btn.disabled = false; return; }
+        }
+      }
+      cerrarModal();
+      await regenerarSeccion(sid, idx);
+    }
+
+    // --- Regeneración en vivo de UNA sección (SSE) ---
+    async function regenerarSeccion(sid, idx) {
+      const cont = elTexto.querySelector('.sec[data-sec-idx="' + idx + '"]');
+      const cuerpoEl = cont ? cont.querySelector('.sec-cuerpo') : null;
+      if (!cont || !cuerpoEl || !secModelo[idx]) return;
+      const titulo = secModelo[idx].titulo;
+      cont.classList.add('regenerando');
+      let acc = '', raf = null, nuevoCuerpo = '';
+      function pintar() {
+        if (raf) return;
+        raf = requestAnimationFrame(() => {
+          raf = null;
+          cuerpoEl.innerHTML = mdToHtml('## ' + titulo + '\\n' + acc) + '<span class="caret"></span>';
+        });
+      }
+      let resp;
+      try {
+        resp = await fetch('/admin/seccion/regenerar', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Admin-Token': adminToken },
+          body: JSON.stringify({ sesion_id: sesionId, section_id: sid }),
+        });
+      } catch (e) { cont.classList.remove('regenerando'); mostrarAviso('No se pudo conectar para regenerar.'); return; }
+      if (!resp.ok) { cont.classList.remove('regenerando'); mostrarAviso('No autorizado o error al regenerar la sección.'); return; }
+
+      const reader = resp.body.getReader(); const dec = new TextDecoder(); let buf = '';
+      while (true) {
+        const r = await reader.read(); if (r.done) break;
+        buf += dec.decode(r.value, { stream: true });
+        let i;
+        while ((i = buf.indexOf('\\n\\n')) >= 0) {
+          const bloque = buf.slice(0, i); buf = buf.slice(i + 2);
+          const linea = bloque.split('\\n').find(l => l.slice(0, 5) === 'data:');
+          if (!linea) continue;
+          let ev; try { ev = JSON.parse(linea.slice(5).trim()); } catch (e) { continue; }
+          if (ev.tipo === 'token') { acc += ev.texto; pintar(); }
+          else if (ev.tipo === 'fin_seccion') { nuevoCuerpo = ev.texto || acc; }
+          else if (ev.tipo === 'error') { if (raf) cancelAnimationFrame(raf); cont.classList.remove('regenerando'); mostrarAviso(ev.mensaje || 'Error al regenerar.'); return; }
+        }
+      }
+      if (raf) cancelAnimationFrame(raf);
+      const cuerpoFinal = (nuevoCuerpo || acc).trim();
+      secModelo[idx].cuerpo = cuerpoFinal;
+      cuerpoEl.innerHTML = mdToHtml('## ' + titulo + '\\n' + cuerpoFinal);
+      cont.classList.remove('regenerando');
+      rebuildInforme();   // el PDF descargable refleja la sección regenerada
+    }
+
+    // --- Inicialización del modo admin ---
+    (function inicializarAdmin() {
+      const btnAdmin = document.getElementById('btnAdmin');
+      if (!ADMIN_HABILITADO) {
+        btnAdmin.style.display = 'none';
+        document.getElementById('btnPrompts').style.display = 'none';
+        return;
+      }
+      // Delegación: botón "✎ prompts" de cada sección.
+      elTexto.addEventListener('click', function (e) {
+        const b = e.target.closest('.sec-editar');
+        if (b) abrirPromptsSeccion(b.dataset.sid, Number(b.dataset.idx));
+      });
+      // Cerrar el modal al hacer click en el fondo.
+      modal.addEventListener('click', e => { if (e.target === modal) cerrarModal(); });
+      // Restaurar sesión admin previa (token en localStorage).
+      let t = ''; try { t = localStorage.getItem('admin_token') || ''; } catch (e) {}
+      if (t) { adminToken = t; activarAdmin(); }
+    })();
   </script>
 """
 
@@ -586,7 +1057,9 @@ app = FastAPI(title="Generador de informes crediticios", lifespan=lifespan)
 
 @app.get("/", response_class=HTMLResponse)
 def formulario():
-    contenido = CONTENIDO.replace("__EMPRESA__", html.escape(EMPRESA))
+    contenido = (CONTENIDO
+                 .replace("__EMPRESA__", html.escape(EMPRESA))
+                 .replace("__ADMIN_HABILITADO__", "1" if ADMIN_PASSWORD else "0"))
     return pagina("Generador de informes — " + EMPRESA, contenido)
 
 def _sse(ev: dict) -> str:
@@ -790,6 +1263,140 @@ def api_informe_pdf_render(req: InformePDFRenderRequest):
     filename = f"informe-{cuit or 's/d'}-{req.numero or 's-n'}.pdf"
     return Response(content=pdf, media_type="application/pdf", headers={
         "Content-Disposition": f'attachment; filename="{filename}"'})
+
+
+# ===========================================================================
+#  API: modo administrador — ver/editar prompts y regenerar una sección
+# ===========================================================================
+
+class LoginRequest(BaseModel):
+    password: str = ""
+
+
+class PromptGuardarRequest(BaseModel):
+    name: str
+    contenido: str
+
+
+class RegenerarSeccionRequest(BaseModel):
+    sesion_id: str
+    section_id: str
+
+
+class SeccionDatosRequest(BaseModel):
+    sesion_id: str
+    section_id: str
+
+
+@app.post("/admin/login")
+def admin_login(req: LoginRequest):
+    """Valida la contraseña admin y devuelve el token de sesión."""
+    if not ADMIN_PASSWORD:
+        return JSONResponse(status_code=403, content={
+            "error": "El modo administrador no está habilitado (falta ADMIN_PASSWORD en .env)."})
+    if not req.password or not hmac.compare_digest(req.password, ADMIN_PASSWORD):
+        return JSONResponse(status_code=401, content={"error": "Contraseña incorrecta."})
+    return {"token": _admin_token()}
+
+
+@app.get("/admin/config")
+def admin_config(x_admin_token: str = Header(default="")):
+    """Catálogo de prompts + mapa de secciones para la UI del editor."""
+    _requerir_admin(x_admin_token)
+    from prompts import catalogo, PROMPTS_POR_SECCION, PROMPTS_COMPARTIDOS
+    from llm.report_sections import especificacion_seccion
+    secciones, titulos = {}, {}
+    for sid, nombres in PROMPTS_POR_SECCION.items():
+        # el título no depende de los valores del contexto, solo de sus claves
+        titulo, _p, _c = especificacion_seccion(sid, {}, {})
+        # 'propios' = prompts específicos de esta sección (los que ve el editor
+        # contextual); 'compartidos' = reglas comunes (se editan en el panel global).
+        propios = [n for n in nombres if n not in PROMPTS_COMPARTIDOS]
+        compartidos = [n for n in nombres if n in PROMPTS_COMPARTIDOS]
+        secciones[sid] = {"titulo": titulo, "prompts": nombres,
+                          "propios": propios, "compartidos": compartidos}
+        titulos[titulo] = sid
+    return {"prompts": catalogo(), "secciones": secciones, "titulos": titulos}
+
+
+@app.get("/admin/prompt/{name}")
+def admin_get_prompt(name: str, x_admin_token: str = Header(default="")):
+    """Devuelve el contenido actual de un prompt del catálogo."""
+    _requerir_admin(x_admin_token)
+    from prompts import CATALOGO, load
+    if name not in CATALOGO:
+        return JSONResponse(status_code=404, content={"error": "Prompt desconocido."})
+    return {"name": name, "titulo": CATALOGO[name]["titulo"], "contenido": load(name)}
+
+
+@app.post("/admin/prompt")
+def admin_guardar_prompt(req: PromptGuardarRequest, x_admin_token: str = Header(default="")):
+    """Guarda un prompt editado (validando nombre y variables `{...}`)."""
+    _requerir_admin(x_admin_token)
+    from prompts import guardar
+    try:
+        guardar(req.name, req.contenido)
+    except ValueError as exc:
+        return JSONResponse(status_code=422, content={"error": str(exc)})
+    return {"ok": True}
+
+
+@app.get("/admin/datos/{sesion_id}")
+def admin_datos(sesion_id: str, x_admin_token: str = Header(default="")):
+    """Devuelve, como JSON legible, TODOS los datos que generaron el informe
+    (contexto: cliente, historial, scoring, BCRA, RAG). Para que el admin vea la
+    fuente y decida mejor al editar los prompts."""
+    _requerir_admin(x_admin_token)
+    try:
+        ctx = get_pipeline(PROVEEDOR_LLM).contexto_sesion(sesion_id)
+    except KeyError as exc:
+        return JSONResponse(status_code=404, content={
+            "error": exc.args[0] if exc.args else "Sesión no encontrada."})
+    from llm.report_sections import _j
+    return {"json": _j(ctx)}
+
+
+@app.post("/admin/seccion/datos")
+def admin_seccion_datos(req: SeccionDatosRequest, x_admin_token: str = Header(default="")):
+    """Devuelve los datos EXACTOS que recibe una sección (el mismo JSON que se le
+    pasa al modelo), para revisarlos junto al prompt de esa sección."""
+    _requerir_admin(x_admin_token)
+    try:
+        titulo, ctx = get_pipeline(PROVEEDOR_LLM).datos_seccion(req.sesion_id, req.section_id)
+    except KeyError as exc:
+        return JSONResponse(status_code=404, content={
+            "error": exc.args[0] if exc.args else "Sesión no encontrada."})
+    except ValueError as exc:
+        return JSONResponse(status_code=422, content={"error": str(exc)})
+    from llm.report_sections import _j
+    return {"titulo": titulo, "json": _j(ctx)}
+
+
+@app.post("/admin/seccion/regenerar")
+def admin_regenerar_seccion(req: RegenerarSeccionRequest, x_admin_token: str = Header(default="")):
+    """Regenera SOLO una sección de un informe ya generado (SSE), usando el
+    contexto retenido en memoria y el prompt (posiblemente editado) del .txt."""
+    _requerir_admin(x_admin_token)
+
+    def eventos():
+        try:
+            pipeline = get_pipeline(PROVEEDOR_LLM)
+            for ev in pipeline.regenerar_seccion_stream(req.sesion_id, req.section_id):
+                yield _sse(ev)
+        except KeyError as exc:
+            # str(KeyError) viene con comillas; usar exc.args[0] para el mensaje limpio.
+            msg = exc.args[0] if exc.args else "Sesión no encontrada."
+            yield _sse({"tipo": "error", "mensaje": str(msg)})
+        except Exception as exc:
+            traceback.print_exc()
+            yield _sse({"tipo": "error",
+                        "mensaje": str(exc).strip() or "No se pudo regenerar la sección."})
+
+    return StreamingResponse(
+        eventos(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 if __name__ == "__main__":

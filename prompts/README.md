@@ -25,7 +25,6 @@ sin tocar el código Python.
 | `secciones_base.txt` | Reglas comunes a TODAS las secciones (tono, qué no inventar, formato de pesos). | — |
 | `seccion_human.txt` | Mensaje que le pasa el contexto (JSON) a cada sección. | `{ctx}` |
 | `seccion_clasificacion.txt` | Instrucción de la sección **Clasificación de Riesgo**. | — |
-| `seccion_historial.txt` | Instrucción de la sección **Historial Crediticio**. | — |
 | `seccion_bcra.txt` | Instrucción de la sección **Situación en el Sistema Financiero (BCRA)**. | — |
 | `seccion_financiera.txt` | Instrucción de la sección **Información Financiera**. | — |
 | `seccion_cumplimiento.txt` | Instrucción de la sección **Cumplimiento de Políticas**. | — |
